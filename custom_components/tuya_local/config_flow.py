@@ -30,6 +30,7 @@ from .const import (
     API_PROTOCOL_VERSIONS,
     CLOUD_ACCOUNT_TYPE,
     CLOUD_ACCOUNT_UNIQUE_ID,
+    CLOUD_PENDING_TYPE,
     CLOUD_SYNC_SOURCE,
     CONF_DEVICE_CID,
     CONF_DEVICE_ID,
@@ -422,6 +423,8 @@ class ConfigFlowHandler(ConfigFlow, domain=DOMAIN):
                 return "failed"
             if result["type"] == FlowResultType.CREATE_ENTRY:
                 return "imported"
+            elif result.get("reason") == "pending_completed":
+                return "imported"
             elif result.get("reason") in (
                 "already_configured",
                 "already_in_progress",
@@ -441,6 +444,31 @@ class ConfigFlowHandler(ConfigFlow, domain=DOMAIN):
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
 
+    async def async_step_cloud_inventory(self, inventory_data):
+        """Create an unavailable inventory entry until local setup is possible."""
+        inventory_id = inventory_data["cloud_inventory_id"]
+        await self.async_set_unique_id(inventory_id)
+        self._abort_if_unique_id_configured()
+        title = (
+            inventory_data.get(CONF_NAME)
+            or inventory_data.get("product_name")
+            or "Tuya cloud device"
+        )
+        data = {
+            CONF_TYPE: CLOUD_PENDING_TYPE,
+            "cloud_inventory_id": inventory_id,
+            CONF_DEVICE_ID: inventory_data[CONF_DEVICE_ID],
+            CONF_LOCAL_KEY: inventory_data.get(CONF_LOCAL_KEY, ""),
+            "product_id": inventory_data.get("product_id"),
+            "product_name": inventory_data.get("product_name"),
+            "category": inventory_data.get("category"),
+            "cloud_online": inventory_data.get("cloud_online", False),
+            "pending_reason": inventory_data.get("pending_reason", "awaiting_lan"),
+        }
+        if inventory_data.get(CONF_DEVICE_CID):
+            data[CONF_DEVICE_CID] = inventory_data[CONF_DEVICE_CID]
+        return self.async_create_entry(title=title, data=data)
+
     async def async_step_import(self, import_data):
         """Validate and automatically create one cloud bulk-import entry."""
         bulk_parent = import_data.get("bulk_parent")
@@ -450,15 +478,27 @@ class ConfigFlowHandler(ConfigFlow, domain=DOMAIN):
         if bulk_parent in cancelled:
             return self.async_abort(reason="bulk_cancelled")
         device_id = import_data[CONF_DEVICE_ID]
+        entries = self.hass.config_entries.async_entries(DOMAIN)
+        pending_entry = next(
+            (
+                entry
+                for entry in entries
+                if entry.data.get(CONF_TYPE) == CLOUD_PENDING_TYPE
+                and (entry.data.get("cloud_inventory_id") or entry.unique_id)
+                == device_id
+            ),
+            None,
+        )
         if any(
-            entry.data.get(CONF_TYPE) != CLOUD_ACCOUNT_TYPE
+            entry.data.get(CONF_TYPE) not in (CLOUD_ACCOUNT_TYPE, CLOUD_PENDING_TYPE)
             and get_device_id(entry.data) == device_id
-            for entry in self.hass.config_entries.async_entries(DOMAIN)
+            for entry in entries
             if entry.data.get(CONF_DEVICE_ID)
         ):
             return self.async_abort(reason="already_configured")
-        await self.async_set_unique_id(device_id)
-        self._abort_if_unique_id_configured()
+        if pending_entry is None:
+            await self.async_set_unique_id(device_id)
+            self._abort_if_unique_id_configured()
 
         protocol = import_data.get(CONF_PROTOCOL_VERSION, "auto")
         if protocol != "auto":
@@ -590,6 +630,15 @@ class ConfigFlowHandler(ConfigFlow, domain=DOMAIN):
             title = matched_config.name
         if bulk_parent in cancelled:
             return self.async_abort(reason="bulk_cancelled")
+        if pending_entry is not None:
+            self.hass.config_entries.async_update_entry(
+                pending_entry,
+                title=title,
+                data=config,
+                options={},
+                unique_id=device_id,
+            )
+            return self.async_abort(reason="pending_completed")
         return self.async_create_entry(title=title, data=config)
 
     async def async_step_cloud_sync(self, import_data):
@@ -1003,7 +1052,10 @@ class OptionsFlowHandler(OptionsFlow):
 
     async def async_step_user(self, user_input=None):
         """Manage the options."""
-        if self.config_entry.data.get(CONF_TYPE) == CLOUD_ACCOUNT_TYPE:
+        if self.config_entry.data.get(CONF_TYPE) in (
+            CLOUD_ACCOUNT_TYPE,
+            CLOUD_PENDING_TYPE,
+        ):
             return self.async_abort(reason="cloud_sync_managed")
         errors = {}
         config = {**self.config_entry.data, **self.config_entry.options}

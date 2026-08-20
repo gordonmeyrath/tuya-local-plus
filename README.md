@@ -15,7 +15,10 @@ The Plus fork adds two reliability and setup features:
 - Cloud synchronization: after SmartLife QR login, multiple directly addressable
   Wi-Fi devices can be selected and imported in one operation. Authentication is
   stored privately and checked every five minutes so newly paired supported Wi-Fi
-  devices are imported automatically. A single LAN scan is shared by each sync,
+  devices are imported automatically. Every device in the cloud account is shown
+  immediately in Home Assistant; offline devices remain inventory placeholders
+  and are upgraded in place when local discovery and profile matching succeed.
+  A single LAN scan is shared by each sync,
   while connection and device-type failures are isolated per device. Automatic
   imports require either an unambiguous exact device-profile match or a validated
   match between the Tuya cloud category and the local profile to prevent unsafe

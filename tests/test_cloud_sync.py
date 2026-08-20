@@ -9,6 +9,8 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.tuya_local import cloud_sync
 from custom_components.tuya_local.const import (
     CLOUD_ACCOUNT_TYPE,
+    CLOUD_INVENTORY_SOURCE,
+    CLOUD_PENDING_TYPE,
     CLOUD_SYNC_SOURCE,
     CONF_DEVICE_ID,
     CONF_LOCAL_KEY,
@@ -35,6 +37,7 @@ def _cloud_device(device_id="new-device", **overrides):
         "is_hub": False,
         "sub": False,
         "node_id": "",
+        "online": True,
         "support_local": True,
     }
     device.update(overrides)
@@ -193,13 +196,24 @@ async def test_sync_skips_force_scan_when_udp_finds_devices(hass, mocker):
     await cloud_sync.TuyaCloudSync(hass)._async_sync()
 
     force_scan.assert_not_awaited()
-    flow_init.assert_awaited_once()
-    assert flow_init.await_args.kwargs["data"][CONF_DEVICE_ID] == "new-device"
+    assert flow_init.await_count == 2
+    imported = next(
+        call
+        for call in flow_init.await_args_list
+        if call.kwargs["context"]["source"] == CLOUD_SYNC_SOURCE
+    )
+    inventory = next(
+        call
+        for call in flow_init.await_args_list
+        if call.kwargs["context"]["source"] == CLOUD_INVENTORY_SOURCE
+    )
+    assert imported.kwargs["data"][CONF_DEVICE_ID] == "new-device"
+    assert inventory.kwargs["data"][CONF_DEVICE_ID] == "silent-device"
 
 
 @pytest.mark.asyncio
 async def test_sync_skips_hubs_and_subdevices(hass, mocker):
-    """Gateway and child devices are never mis-imported as direct devices."""
+    """Gateway and child devices become inventory, not direct local imports."""
     _patch_cloud(
         mocker,
         {
@@ -218,7 +232,37 @@ async def test_sync_skips_hubs_and_subdevices(hass, mocker):
     await cloud_sync.TuyaCloudSync(hass)._async_sync()
 
     scan.assert_not_awaited()
-    flow_init.assert_not_awaited()
+    assert flow_init.await_count == 2
+    assert {call.kwargs["context"]["source"] for call in flow_init.await_args_list} == {
+        CLOUD_INVENTORY_SOURCE
+    }
+
+
+@pytest.mark.asyncio
+async def test_sync_adds_offline_device_to_cloud_inventory(hass, mocker):
+    """An offline cloud device is represented before it has a LAN address."""
+    _patch_cloud(
+        mocker,
+        {"offline-device": _cloud_device("offline-device", online=False)},
+    )
+    mocker.patch(
+        "custom_components.tuya_local.cloud_sync.async_scan_devices",
+        new=AsyncMock(return_value={}),
+    )
+    flow_init = mocker.patch.object(
+        hass.config_entries.flow,
+        "async_init",
+        new=AsyncMock(return_value={"type": "create_entry"}),
+    )
+
+    await cloud_sync.TuyaCloudSync(hass)._async_sync()
+
+    flow_init.assert_awaited_once()
+    data = flow_init.await_args.kwargs["data"]
+    assert flow_init.await_args.kwargs["context"]["source"] == CLOUD_INVENTORY_SOURCE
+    assert data["cloud_inventory_id"] == "offline-device"
+    assert data["pending_reason"] == "offline"
+    assert data["cloud_online"] is False
 
 
 @pytest.mark.asyncio
@@ -307,6 +351,23 @@ def test_cloud_account_is_not_a_physical_device(hass):
     entry.add_to_hass(hass)
 
     assert cloud_sync._configured_device_ids(hass) == set()
+
+
+def test_pending_inventory_is_not_locally_configured(hass):
+    """Pending cloud inventory remains eligible for later local upgrade."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="pending-device",
+        data={
+            CONF_TYPE: CLOUD_PENDING_TYPE,
+            CONF_DEVICE_ID: "pending-device",
+            "cloud_inventory_id": "pending-device",
+        },
+    )
+    entry.add_to_hass(hass)
+
+    assert cloud_sync._configured_device_ids(hass) == set()
+    assert cloud_sync._inventory_device_ids(hass) == {"pending-device"}
 
 
 @pytest.mark.asyncio

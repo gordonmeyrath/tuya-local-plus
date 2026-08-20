@@ -16,7 +16,10 @@ from homeassistant.helpers.start import async_at_started
 from .cloud import Cloud, async_load_auth
 from .const import (
     CLOUD_ACCOUNT_TYPE,
+    CLOUD_INVENTORY_SOURCE,
+    CLOUD_PENDING_TYPE,
     CLOUD_SYNC_SOURCE,
+    CONF_DEVICE_CID,
     CONF_DEVICE_ID,
     CONF_LOCAL_KEY,
     CONF_POLL_ONLY,
@@ -38,6 +41,18 @@ def _configured_device_ids(hass: HomeAssistant) -> set[str]:
     """Return physical device identities from every Tuya Local config entry."""
     return {
         get_device_id(entry.data)
+        for entry in hass.config_entries.async_entries(DOMAIN)
+        if entry.data.get(CONF_TYPE) not in (CLOUD_ACCOUNT_TYPE, CLOUD_PENDING_TYPE)
+        and entry.data.get(CONF_DEVICE_ID)
+    }
+
+
+def _inventory_device_ids(hass: HomeAssistant) -> set[str]:
+    """Return every cloud identity already represented by a config entry."""
+    return {
+        entry.data.get("cloud_inventory_id")
+        or entry.unique_id
+        or get_device_id(entry.data)
         for entry in hass.config_entries.async_entries(DOMAIN)
         if entry.data.get(CONF_TYPE) != CLOUD_ACCOUNT_TYPE
         and entry.data.get(CONF_DEVICE_ID)
@@ -129,6 +144,7 @@ class TuyaCloudSync:
                 if device_id not in configured and device_id not in self._rejected
             }
             if not pending:
+                await self._async_ensure_inventory(cloud_devices)
                 return
 
             discovered = await async_scan_devices(self._hass)
@@ -172,6 +188,7 @@ class TuyaCloudSync:
                     }
 
             semaphore = asyncio.Semaphore(3)
+            resolved_ids: set[str] = set()
 
             async def import_device(device_id, cloud_device):
                 local = lan_devices.get(device_id)
@@ -217,7 +234,11 @@ class TuyaCloudSync:
                     return
                 if result.get("reason") == "bulk_not_supported":
                     self._rejected.add(device_id)
-                elif result.get("type") == "create_entry":
+                elif (
+                    result.get("type") == "create_entry"
+                    or result.get("reason") == "pending_completed"
+                ):
+                    resolved_ids.add(device_id)
                     _LOGGER.warning(
                         "Automatically imported new Smart Life device: %s",
                         cloud_device.get("name") or device_id,
@@ -229,6 +250,7 @@ class TuyaCloudSync:
                     for device_id, cloud_device in pending.items()
                 )
             )
+            await self._async_ensure_inventory(cloud_devices, resolved_ids)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -236,6 +258,63 @@ class TuyaCloudSync:
         finally:
             if self._sync_task is asyncio.current_task():
                 self._sync_task = None
+
+    async def _async_ensure_inventory(
+        self, cloud_devices: dict[str, dict], resolved_ids: set[str] | None = None
+    ) -> None:
+        """Represent every cloud device, even while it is offline locally."""
+        represented = _inventory_device_ids(self._hass) | (resolved_ids or set())
+        semaphore = asyncio.Semaphore(10)
+
+        async def add_device(inventory_id, device):
+            if inventory_id in represented:
+                return
+            reason = "awaiting_lan"
+            if device.get("is_hub"):
+                reason = "hub"
+            elif device.get("sub") or device.get("node_id"):
+                reason = "subdevice"
+            elif not device.get("support_local", True):
+                reason = "cloud_only"
+            elif not device.get(CONF_LOCAL_KEY):
+                reason = "missing_local_key"
+            elif not device.get("online"):
+                reason = "offline"
+            data = {
+                "cloud_inventory_id": inventory_id,
+                CONF_DEVICE_ID: device["id"],
+                CONF_DEVICE_CID: device.get(CONF_DEVICE_CID),
+                CONF_LOCAL_KEY: device.get(CONF_LOCAL_KEY, ""),
+                CONF_NAME: device.get("name") or device.get("product_name"),
+                "product_id": device.get("product_id"),
+                "product_name": device.get("product_name"),
+                "category": device.get("category"),
+                "cloud_online": bool(device.get("online")),
+                "pending_reason": reason,
+            }
+            try:
+                async with semaphore, asyncio.timeout(30):
+                    await self._hass.config_entries.flow.async_init(
+                        DOMAIN,
+                        context={"source": CLOUD_INVENTORY_SOURCE},
+                        data=data,
+                    )
+            except TimeoutError:
+                _LOGGER.warning(
+                    "Timed out adding cloud inventory device %s", inventory_id
+                )
+            except Exception:
+                _LOGGER.exception(
+                    "Failed to add cloud inventory device %s", inventory_id
+                )
+
+        await asyncio.gather(
+            *(
+                add_device(inventory_id, device)
+                for inventory_id, device in cloud_devices.items()
+                if inventory_id not in represented
+            )
+        )
 
     def _local_networks(self) -> list[str]:
         """Derive conservative /24 scan ranges from verified device hosts."""

@@ -7,6 +7,7 @@ import voluptuous as vol
 from homeassistant.const import CONF_HOST, CONF_NAME
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -19,6 +20,8 @@ from custom_components.tuya_local import (
     get_device_unique_id,
 )
 from custom_components.tuya_local.const import (
+    CLOUD_INVENTORY_SOURCE,
+    CLOUD_PENDING_TYPE,
     CONF_DEVICE_CID,
     CONF_DEVICE_ID,
     CONF_LOCAL_KEY,
@@ -904,6 +907,37 @@ async def test_cloud_sync_options_flow_is_managed_automatically(hass):
 
     result = await hass.config_entries.options.async_init(config_entry.entry_id)
 
+    assert result["type"] == "abort"
+    assert result["reason"] == "cloud_sync_managed"
+
+
+@pytest.mark.asyncio
+async def test_pending_cloud_entry_creates_device_inventory(hass):
+    """An offline cloud entry is visible as a device without local entities."""
+    config_entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="offline-device",
+        title="Offline plug",
+        data={
+            CONF_TYPE: CLOUD_PENDING_TYPE,
+            CONF_DEVICE_ID: "offline-device",
+            CONF_LOCAL_KEY: "offline-key",
+            "cloud_inventory_id": "offline-device",
+            "product_name": "Plug",
+            "pending_reason": "offline",
+        },
+    )
+    config_entry.add_to_hass(hass)
+
+    assert await async_setup_entry(hass, config_entry)
+
+    device = dr.async_get(hass).async_get_device(
+        identifiers={(DOMAIN, "offline-device")}
+    )
+    assert device is not None
+    assert device.name == "Offline plug"
+    assert device.manufacturer == "Tuya"
+    result = await hass.config_entries.options.async_init(config_entry.entry_id)
     assert result["type"] == "abort"
     assert result["reason"] == "cloud_sync_managed"
 
@@ -1865,6 +1899,86 @@ async def test_flow_cloud_bulk_scan_failure_still_enables_sync(hass, mocker):
         "imported": 0,
         "skipped": 0,
         "failed": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_cloud_inventory_flow_creates_pending_entry(hass, bypass_setup):
+    """Cloud inventory creates a stable entry before LAN discovery succeeds."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": CLOUD_INVENTORY_SOURCE},
+        data={
+            "cloud_inventory_id": "offline-device",
+            CONF_DEVICE_ID: "offline-device",
+            CONF_LOCAL_KEY: "offline-key",
+            CONF_NAME: "Offline plug",
+            "product_id": "product-id",
+            "product_name": "Plug",
+            "category": "cz",
+            "cloud_online": False,
+            "pending_reason": "offline",
+        },
+    )
+
+    assert result["type"] == "create_entry"
+    assert result["title"] == "Offline plug"
+    assert result["data"][CONF_TYPE] == CLOUD_PENDING_TYPE
+    assert result["data"]["cloud_inventory_id"] == "offline-device"
+
+
+@pytest.mark.asyncio
+async def test_import_flow_upgrades_pending_cloud_entry(hass, mocker):
+    """LAN discovery converts the existing inventory entry in place."""
+    pending = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="deviceid",
+        title="Offline plug",
+        data={
+            CONF_TYPE: CLOUD_PENDING_TYPE,
+            CONF_DEVICE_ID: "deviceid",
+            CONF_LOCAL_KEY: TESTKEY,
+            "cloud_inventory_id": "deviceid",
+            "pending_reason": "offline",
+        },
+    )
+    pending.add_to_hass(hass)
+    mock_device = mocker.MagicMock()
+    mock_device._protocol_configured = 3.3
+    mock_device._product_ids = []
+    mock_device._get_cached_state.return_value = {"1": True}
+    mock_type = mocker.MagicMock()
+    mock_type.config_type = "simple_switch"
+    mock_type.match_quality.return_value = 100
+    mock_type.product_display_entries.return_value = [("Tuya", "Plug")]
+    mock_device.async_possible_types = AsyncMock(return_value=[mock_type])
+    mocker.patch(
+        "custom_components.tuya_local.config_flow.async_test_connection",
+        return_value=mock_device,
+    )
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "cloud_sync"},
+        data={
+            CONF_DEVICE_ID: "deviceid",
+            CONF_HOST: "192.168.1.20",
+            CONF_LOCAL_KEY: TESTKEY,
+            CONF_PROTOCOL_VERSION: "auto",
+            CONF_NAME: "Kitchen plug",
+            "category": "cz",
+        },
+    )
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "pending_completed"
+    assert pending.title == "Kitchen plug"
+    assert pending.data[CONF_TYPE] == "simple_switch"
+    assert pending.data[CONF_HOST] == "192.168.1.20"
+    assert pending.data[CONF_MANUFACTURER] == "Tuya"
+    assert pending.data[CONF_MODEL] == "Plug"
+    assert pending.entry_id in {
+        entry.entry_id for entry in hass.config_entries.async_entries(DOMAIN)
     }
 
 

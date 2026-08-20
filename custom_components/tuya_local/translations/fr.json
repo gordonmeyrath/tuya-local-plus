@@ -84,6 +84,7 @@
             "bulk_complete": "Bulk import complete: {imported} imported, {skipped} already configured, {failed} unavailable or unsupported.",
             "bulk_connection_failed": "The device was not reachable over the local network.",
             "bulk_not_supported": "The device could not be matched to a supported local device type safely.",
+            "pending_completed": "The cloud inventory device was upgraded to local control.",
             "bulk_cancelled": "The bulk import was cancelled."
         },
         "error": {

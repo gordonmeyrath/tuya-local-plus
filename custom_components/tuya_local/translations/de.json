@@ -84,6 +84,7 @@
             "bulk_complete": "Massenimport abgeschlossen: {imported} importiert, {skipped} bereits konfiguriert, {failed} nicht erreichbar oder nicht unterstützt.",
             "bulk_connection_failed": "Das Gerät war im lokalen Netzwerk nicht erreichbar.",
             "bulk_not_supported": "Das Gerät konnte keinem unterstützten lokalen Gerätetyp sicher zugeordnet werden.",
+            "pending_completed": "Das Cloud-Inventargerät wurde auf lokale Steuerung aktualisiert.",
             "bulk_cancelled": "Der Massenimport wurde abgebrochen."
         },
         "error": {

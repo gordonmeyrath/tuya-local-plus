@@ -5,8 +5,10 @@ DATA_CLOUD_SYNC = "cloud_sync"
 DATA_CLOUD_IMPORTING = "cloud_importing"
 
 CLOUD_ACCOUNT_TYPE = "cloud_account"
+CLOUD_PENDING_TYPE = "cloud_pending"
 CLOUD_ACCOUNT_UNIQUE_ID = "smartlife_cloud_sync"
 CLOUD_AUTH_STORE = "tuya_local_auth"
+CLOUD_INVENTORY_SOURCE = "cloud_inventory"
 CLOUD_SYNC_SOURCE = "cloud_sync"
 
 CONF_DEVICE_ID = "device_id"

@@ -22,6 +22,7 @@ from .cloud import async_load_auth
 from .cloud_sync import async_start_cloud_sync, async_stop_cloud_sync
 from .const import (
     CLOUD_ACCOUNT_TYPE,
+    CLOUD_PENDING_TYPE,
     CONF_DEVICE_CID,
     CONF_DEVICE_ID,
     CONF_LOCAL_KEY,
@@ -118,7 +119,7 @@ def cleanup_failed_device(hass: HomeAssistant, device_id: str):
 async def async_migrate_entry(hass, entry: ConfigEntry):
     """Migrate to latest config format."""
 
-    if entry.data.get(CONF_TYPE) == CLOUD_ACCOUNT_TYPE:
+    if entry.data.get(CONF_TYPE) in (CLOUD_ACCOUNT_TYPE, CLOUD_PENDING_TYPE):
         return True
 
     CONF_TYPE_AUTO = "auto"
@@ -1059,6 +1060,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         entry.async_on_unload(entry.add_update_listener(async_update_entry))
         return True
 
+    if entry.data.get(CONF_TYPE) == CLOUD_PENDING_TYPE:
+        inventory_id = (
+            entry.data.get("cloud_inventory_id")
+            or entry.unique_id
+            or entry.data[CONF_DEVICE_ID]
+        )
+        device_registry = async_get_device_registry(hass)
+        device_registry.async_get_or_create(
+            config_entry_id=entry.entry_id,
+            identifiers={(DOMAIN, inventory_id)},
+            manufacturer="Tuya",
+            model=entry.data.get("product_name"),
+            name=entry.title,
+        )
+        entry.async_on_unload(entry.add_update_listener(async_update_entry))
+        return True
+
     device_id = get_device_id(entry.data)
     _LOGGER.debug(
         "Setting up entry for device: %s",
@@ -1106,6 +1124,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
         async_stop_cloud_sync(hass)
         return True
 
+    if entry.data.get(CONF_TYPE) == CLOUD_PENDING_TYPE:
+        return True
+
     device_id = get_device_id(entry.data)
     _LOGGER.debug("Unloading entry for device: %s", device_id)
     config = entry.data
@@ -1149,7 +1170,7 @@ def _other_device_entries(hass: HomeAssistant, excluded_entry_id: str):
         other
         for other in hass.config_entries.async_entries(DOMAIN)
         if other.entry_id != excluded_entry_id
-        and other.data.get(CONF_TYPE) != CLOUD_ACCOUNT_TYPE
+        and other.data.get(CONF_TYPE) not in (CLOUD_ACCOUNT_TYPE, CLOUD_PENDING_TYPE)
         and other.data.get(CONF_DEVICE_ID)
     ]
 
