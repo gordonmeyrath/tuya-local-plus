@@ -27,9 +27,12 @@ The Plus fork adds two reliability and setup features:
 The integration still communicates with devices locally after setup. Cloud access
 is optional and only used to obtain setup metadata and local keys.
 
-## Upstream project
+## Support and upstream
 
-Please report any [issues](https://github.com/make-all/tuya-local/issues) and feel free to raise [pull requests](https://github.com/make-all/tuya-local/pulls).
+Please report Plus-specific [issues](https://github.com/gordonmeyrath/tuya-local/issues)
+and open [pull requests](https://github.com/gordonmeyrath/tuya-local/pulls) in this
+fork. General device support is inherited from the
+[upstream project](https://github.com/make-all/tuya-local).
 [Many others](https://github.com/make-all/tuya-local/blob/main/ACKNOWLEDGEMENTS.md) have contributed their help already.
 
 [![BuyMeCoffee](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/jasonrumney)

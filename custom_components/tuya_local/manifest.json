@@ -2,14 +2,15 @@
     "domain": "tuya_local",
     "name": "Tuya Local Plus",
     "codeowners": [
-        "@make-all"
+        "@make-all",
+        "@gordonmeyrath"
     ],
     "config_flow": true,
     "dependencies": [],
-    "documentation": "https://github.com/make-all/tuya-local",
+    "documentation": "https://github.com/gordonmeyrath/tuya-local",
     "integration_type": "device",
     "iot_class": "local_push",
-    "issue_tracker": "https://github.com/make-all/tuya-local/issues",
+    "issue_tracker": "https://github.com/gordonmeyrath/tuya-local/issues",
     "loggers": [
         "tuya_local",
         "tinytuya"
