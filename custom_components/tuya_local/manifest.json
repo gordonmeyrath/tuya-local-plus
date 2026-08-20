@@ -1,6 +1,6 @@
 {
     "domain": "tuya_local",
-    "name": "Tuya Local",
+    "name": "Tuya Local Plus",
     "codeowners": [
         "@make-all"
     ],
@@ -18,5 +18,5 @@
         "tinytuya==1.20.0",
         "tuya-device-sharing-sdk~=0.2.4"
     ],
-    "version": "2026.8.1"
+    "version": "2026.8.1-plus.1"
 }

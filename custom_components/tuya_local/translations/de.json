@@ -1,5 +1,5 @@
 {
-    "title": "Tuya Local",
+    "title": "Tuya Local Plus",
     "config": {
         "step": {
             "user": {
@@ -26,6 +26,13 @@
                 "data": {
                     "device_id": "Gerät auswählen:",
                     "hub_id": "Gateway wählen:"
+                }
+            },
+            "bulk_import": {
+                "title": "Tuya-Cloud-Geräte importieren",
+                "description": "Wählen Sie direkt erreichbare WLAN-Geräte für den ersten lokalen Import aus. Eine dauerhafte Cloud-Synchronisierung fügt danach neu gekoppelte unterstützte WLAN-Geräte automatisch hinzu. Gateway-, Bluetooth- und Zigbee-Untergeräte benötigen eine separate Einrichtung und werden nicht angezeigt.",
+                "data": {
+                    "device_ids": "Zu importierende Geräte"
                 }
             },
             "search": {
@@ -66,10 +73,18 @@
                 }
             }
         },
+        "progress": {
+            "bulk_import": "Ausgewählte Geräte werden gesucht und importiert"
+        },
         "abort": {
             "already_configured": "Es wurde bereits ein Gerät mit dieser ID hinzugefügt.",
             "not_supported": "Dieses Gerät wird leider nicht unterstützt.",
-            "no_devices": "Für das Konto konnten keine nicht registrierten Geräte gefunden werden."
+            "no_devices": "Für das Konto konnten keine nicht registrierten Geräte gefunden werden.",
+            "bulk_no_devices": "Für den Massenimport sind keine direkt erreichbaren lokalen Geräte verfügbar.",
+            "bulk_complete": "Massenimport abgeschlossen: {imported} importiert, {skipped} bereits konfiguriert, {failed} nicht erreichbar oder nicht unterstützt.",
+            "bulk_connection_failed": "Das Gerät war im lokalen Netzwerk nicht erreichbar.",
+            "bulk_not_supported": "Das Gerät konnte keinem unterstützten lokalen Gerätetyp sicher zugeordnet werden.",
+            "bulk_cancelled": "Der Massenimport wurde abgebrochen."
         },
         "error": {
             "connection": "Mit diesen Angaben kann keine Verbindung zu Ihrem Gerät hergestellt werden. Es könnte sich um ein intermittierendes Problem handeln, oder die Angaben sind falsch. Wenn Sie eine bestimmte Protokollversion ausgewählt haben, versuchen Sie stattdessen 'auto'.",
@@ -81,6 +96,7 @@
         "setup_mode": {
             "options": {
                 "cloud": "Cloud-gestützte Geräteeinrichtung von SmartLife.",
+                "cloud_bulk": "Lokale Geräte importieren und automatische SmartLife-Cloud-Synchronisierung aktivieren.",
                 "manual": "Geben Sie manuell Informationen zur Geräteverbindung an.",
                 "cloud_fresh_login": "Cloud-gestützte Geräteeinrichtung von SmartLife mit einem frischen Login."
             }
@@ -103,7 +119,8 @@
             "connection": "Mit diesen Angaben kann keine Verbindung zu Ihrem Gerät hergestellt werden. Es könnte sich um ein intermittierendes Problem handeln, oder die Angaben sind falsch. Wenn Sie eine bestimmte Protokollversion ausgewählt haben, versuchen Sie stattdessen 'auto'."
         },
         "abort": {
-            "not_supported": "Dieses Gerät wird leider nicht unterstützt."
+            "not_supported": "Dieses Gerät wird leider nicht unterstützt.",
+            "cloud_sync_managed": "Die Cloud-Synchronisierung läuft automatisch und besitzt keine konfigurierbaren Optionen."
         }
     },
     "services": {

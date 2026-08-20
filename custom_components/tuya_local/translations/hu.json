@@ -1,5 +1,5 @@
 {
-    "title": "Tuya Local",
+    "title": "Tuya Local Plus",
     "config": {
         "step": {
             "user": {
@@ -26,6 +26,13 @@
                 "data": {
                     "device_id": "Válasszon eszközt:",
                     "hub_id": "Válasszon átjárót:"
+                }
+            },
+            "bulk_import": {
+                "title": "Import Tuya cloud devices",
+                "description": "Select the directly addressable Wi-Fi devices to discover, validate and import locally. Gateway, Bluetooth and Zigbee child devices require separate setup and are not listed.",
+                "data": {
+                    "device_ids": "Devices to import"
                 }
             },
             "search": {
@@ -66,10 +73,18 @@
                 }
             }
         },
+        "progress": {
+            "bulk_import": "Discovering and importing selected devices"
+        },
         "abort": {
             "already_configured": "Ezzel az azonosítóval már lett hozzáadva eszköz.",
             "not_supported": "Sajnálom, ez az eszköz nem támogatott.",
-            "no_devices": "Nem található a fiókhoz nem regisztrált eszköz."
+            "no_devices": "Nem található a fiókhoz nem regisztrált eszköz.",
+            "bulk_no_devices": "No directly addressable local devices are available for bulk import.",
+            "bulk_complete": "Bulk import complete: {imported} imported, {skipped} already configured, {failed} unavailable or unsupported.",
+            "bulk_connection_failed": "The device was not reachable over the local network.",
+            "bulk_not_supported": "The device could not be matched to a supported local device type safely.",
+            "bulk_cancelled": "The bulk import was cancelled."
         },
         "error": {
             "connection": "A megadott adatokkal nem sikerült kapcsolódni az eszközhöz. Lehet ideiglenes a probléma, vagy nem megfelelőek a megadott adatok. Ha egy adott protokoll verziót választottál, próbáld meg 'auto'-ra állítani.",
@@ -81,6 +96,7 @@
         "setup_mode": {
             "options": {
                 "cloud": "SmartLife felhő által támogatott eszközbeállítás.",
+                "cloud_bulk": "Import all selected local devices from SmartLife cloud.",
                 "manual": "Adja meg manuálisan az eszköz csatlakozási adatait.",
                 "cloud_fresh_login": "SmartLife felhő által támogatott eszközbeállítás, friss bejelentkezés."
             }
@@ -103,7 +119,8 @@
             "connection": "A megadott adatokkal nem sikerült kapcsolódni az eszközhöz. Lehet ideiglenes a probléma, vagy nem megfelelőek a megadott adatok. Ha egy adott protokoll verziót választottál, próbáld meg 'auto'-ra állítani."
         },
         "abort": {
-            "not_supported": "Sajnálom, ez az eszköz nem támogatott."
+            "not_supported": "Sajnálom, ez az eszköz nem támogatott.",
+            "cloud_sync_managed": "Cloud synchronization runs automatically and has no configurable options."
         }
     },
     "services": {

@@ -34,20 +34,38 @@ References:
 - the integration's own config-flow scan: config_flow.scan_for_device
 """
 
+import asyncio
+import io
 import logging
+from contextlib import redirect_stdout
 from datetime import timedelta
+from ipaddress import ip_address
+from time import monotonic
 
 import tinytuya
 from homeassistant.config_entries import SOURCE_INTEGRATION_DISCOVERY
 from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_interval
+from tinytuya import scanner
 
-from .const import CONF_DEVICE_CID, CONF_DEVICE_ID, CONF_TYPE, DATA_DISCOVERY, DOMAIN
+from .const import (
+    API_PROTOCOL_VERSIONS,
+    CLOUD_ACCOUNT_TYPE,
+    CONF_DEVICE_CID,
+    CONF_DEVICE_ID,
+    CONF_LOCAL_KEY,
+    CONF_PROTOCOL_VERSION,
+    CONF_TYPE,
+    DATA_CLOUD_IMPORTING,
+    DATA_DISCOVERY,
+    DOMAIN,
+)
 from .helpers.config import get_device_id
 from .helpers.device_config import get_config
 
 _LOGGER = logging.getLogger(__name__)
+_SCAN_LOCK = asyncio.Lock()
 
 # How often to look for unreachable devices. Reachable devices are skipped, so
 # a healthy system generates no scan traffic; an unreachable device is normally
@@ -57,6 +75,7 @@ SWEEP_INTERVAL = timedelta(seconds=60)
 # How often to run the full network scan (product-id check + new-device
 # discovery). Infrequent, since neither action is time critical.
 SCAN_INTERVAL = timedelta(minutes=10)
+UNCHANGED_SWEEP_BACKOFF = timedelta(minutes=10)
 
 
 def _find_device(device_id):
@@ -84,6 +103,133 @@ def _scan_all():
         return {}
 
 
+def _force_scan(networks, devices):
+    """Probe known private subnets using cloud device IDs and local keys."""
+    known = [
+        {
+            "id": device["id"],
+            "key": device[CONF_LOCAL_KEY],
+            "name": device.get("name", ""),
+        }
+        for device in devices
+        if device.get("id") and device.get(CONF_LOCAL_KEY)
+    ]
+    if not known or not networks:
+        return {}
+    # TinyTuya prints low-level probe responses even with verbose disabled.
+    # Keep those encrypted payloads out of Home Assistant logs.
+    with redirect_stdout(io.StringIO()):
+        return scanner.devices(
+            verbose=False,
+            color=False,
+            poll=False,
+            forcescan=networks,
+            discover=False,
+            byID=False,
+            assume_yes=True,
+            tuyadevices=known,
+        )
+
+
+async def async_scan_devices(hass: HomeAssistant):
+    """Run one LAN scan without competing for TinyTuya's UDP sockets."""
+    async with _SCAN_LOCK:
+        scan = hass.async_add_executor_job(_scan_all)
+        try:
+            return await asyncio.shield(scan)
+        except asyncio.CancelledError:
+            await scan
+            raise
+
+
+async def async_find_device(hass: HomeAssistant, device_id):
+    """Locate one device without competing for TinyTuya's UDP sockets."""
+    async with _SCAN_LOCK:
+        scan = hass.async_add_executor_job(_find_device, device_id)
+        try:
+            return await asyncio.shield(scan)
+        except asyncio.CancelledError:
+            await scan
+            raise
+
+
+async def async_force_scan_devices(hass: HomeAssistant, devices, networks):
+    """Force-scan known LAN ranges without competing for TinyTuya sockets."""
+    async with _SCAN_LOCK:
+        scan = hass.async_add_executor_job(_force_scan, networks, devices)
+        try:
+            return await asyncio.shield(scan)
+        except asyncio.CancelledError:
+            await scan
+            raise
+
+
+def _set_protocol(device, version) -> None:
+    """Configure a TinyTuya device, including device22 pseudo versions."""
+    device.disabledetect = True
+    if version == 3.22:
+        version = 3.3
+        device.disabledetect = False
+    elif version == 3.42:
+        version = 3.4
+        device.disabledetect = False
+    elif version == 3.52:
+        version = 3.5
+        device.disabledetect = False
+    device.set_version(version)
+
+
+def _validate_candidate(config, candidate_ip) -> bool:
+    """Verify a discovered address by completing an authenticated local request."""
+    try:
+        address = ip_address(candidate_ip)
+    except ValueError:
+        return False
+    if not address.is_private or address.is_loopback or address.is_unspecified:
+        return False
+
+    device_id = config.get(CONF_DEVICE_ID)
+    local_key = config.get(CONF_LOCAL_KEY)
+    configured = config.get(CONF_PROTOCOL_VERSION, "auto")
+    if not device_id or not local_key:
+        return False
+
+    protocols = API_PROTOCOL_VERSIONS if configured == "auto" else [configured]
+    protocols = [protocol for protocol in protocols if protocol != 3.1]
+    for protocol in protocols:
+        parent = tinytuya.Device(device_id, candidate_ip, local_key)
+        target = parent
+        child_id = config.get(CONF_DEVICE_CID)
+        if child_id:
+            target = tinytuya.Device(child_id, cid=child_id, parent=parent)
+        target.set_socketRetryLimit(1)
+        if target.parent:
+            target.parent.set_socketRetryLimit(1)
+        try:
+            _set_protocol(target, protocol)
+            if target.parent:
+                _set_protocol(target.parent, protocol)
+            result = target.status()
+            if isinstance(result, dict) and (
+                "Error" not in result
+                and "Err" not in result
+                and isinstance(result.get("dps"), dict)
+            ):
+                return True
+        except Exception as exc:  # network/protocol errors reject candidate
+            _LOGGER.debug(
+                "Candidate %s failed validation with protocol %s: %s",
+                candidate_ip,
+                protocol,
+                exc,
+            )
+        finally:
+            target.set_socketPersistent(False)
+            if target.parent:
+                target.parent.set_socketPersistent(False)
+    return False
+
+
 class TuyaLANRediscovery:
     """Active LAN discovery for Tuya devices."""
 
@@ -92,6 +238,8 @@ class TuyaLANRediscovery:
         self._unsub_sweep = None
         self._unsub_scan = None
         self._scanning = False
+        self._stopped = False
+        self._unchanged_until = {}
         # device ids already warned about an unmatched product id this run.
         self._warned_products = set()
         # gwIds an integration_discovery flow has already been raised for.
@@ -100,13 +248,11 @@ class TuyaLANRediscovery:
     @callback
     def async_start(self) -> None:
         """Begin periodic discovery tasks."""
-        # TEMPORARILY DISABLED: the sweep is a bit too aggressive and can cause
-        # incorrect IP updates if a device is temporarily unreachable, see #5713.
-        #
-        # if self._unsub_sweep is None:
-        #     self._unsub_sweep = async_track_time_interval(
-        #         self._hass, self._async_sweep, SWEEP_INTERVAL
-        #     )
+        self._stopped = False
+        if self._unsub_sweep is None:
+            self._unsub_sweep = async_track_time_interval(
+                self._hass, self._async_sweep, SWEEP_INTERVAL
+            )
         if self._unsub_scan is None:
             self._unsub_scan = async_track_time_interval(
                 self._hass, self._async_discovery_scan, SCAN_INTERVAL
@@ -115,68 +261,116 @@ class TuyaLANRediscovery:
     @callback
     def async_stop(self, event=None) -> None:
         """Stop periodic discovery tasks."""
+        self._stopped = True
         for attr in ("_unsub_sweep", "_unsub_scan"):
             unsub = getattr(self, attr)
             if unsub is not None:
                 unsub()
                 setattr(self, attr, None)
 
-    def _unreachable_entries(self):
-        """Yield (entry, device_id) for configured devices not returning state."""
+    def _unreachable_gateways(self):
+        """Yield one entry group per gateway when no sibling returns state."""
         domain_data = self._hass.data.get(DOMAIN, {})
+        grouped = {}
         for entry in self._hass.config_entries.async_entries(DOMAIN):
             device_id = entry.data.get(CONF_DEVICE_ID)
             if not device_id:
                 continue
-            bucket = domain_data.get(get_device_id(entry.data))
-            device = bucket.get("device") if bucket else None
-            # No device object yet (setup not complete / failed) or it has not
-            # returned state recently -> treat as unreachable and worth a scan.
-            if device is not None and device.has_returned_state:
+            grouped.setdefault(device_id, []).append(entry)
+
+        now = monotonic()
+        for device_id, entries in grouped.items():
+            if self._unchanged_until.get(device_id, 0) > now:
                 continue
-            yield entry, device_id
+            devices = []
+            for entry in entries:
+                bucket = domain_data.get(get_device_id(entry.data))
+                if bucket and (device := bucket.get("device")) is not None:
+                    devices.append(device)
+            if any(device.has_returned_state for device in devices):
+                continue
+            yield entries, device_id
 
     async def _async_sweep(self, now=None) -> None:
         """Scan for any unreachable devices and update changed hosts."""
         if self._scanning:
             return
-        targets = list(self._unreachable_entries())
+        targets = list(self._unreachable_gateways())
         if not targets:
             return
 
         self._scanning = True
         try:
-            for entry, device_id in targets:
-                found = await self._hass.async_add_executor_job(_find_device, device_id)
+            for entries, device_id in targets:
+                found = await async_find_device(self._hass, device_id)
+                if self._stopped:
+                    return
                 ip = found.get("ip") if found else None
                 if not ip:
                     continue
-                current = {**entry.data, **entry.options}.get(CONF_HOST)
-                if ip == current:
+                effective_hosts = {
+                    {**entry.data, **entry.options}.get(CONF_HOST) for entry in entries
+                }
+                if effective_hosts == {ip}:
+                    self._unchanged_until[device_id] = (
+                        monotonic() + UNCHANGED_SWEEP_BACKOFF.total_seconds()
+                    )
+                    continue
+                validation_entry = next(
+                    (entry for entry in entries if not entry.data.get(CONF_DEVICE_CID)),
+                    entries[0],
+                )
+                config = {**validation_entry.data, **validation_entry.options}
+                valid = await self._hass.async_add_executor_job(
+                    _validate_candidate, config, ip
+                )
+                if self._stopped:
+                    return
+                if not valid:
+                    _LOGGER.warning(
+                        "%s: ignoring unverified LAN address %s discovered for device %s",
+                        validation_entry.title,
+                        ip,
+                        device_id,
+                    )
                     continue
                 # WARNING, not INFO: an IP change is a notable operational event
                 # the user may want to see, and config entries commonly run at
                 # log level WARNING (which would suppress INFO).
-                _LOGGER.warning(
-                    "%s: LAN IP changed to %s (was %s); updating configuration",
-                    entry.title,
-                    ip,
-                    current,
-                )
+                self._update_cached_gateway(device_id, ip)
                 # Write the new host wherever it currently takes effect: always
                 # to data, and also to options when options carries the host
                 # (the options flow stores it there, overriding data), so the
                 # merged config actually changes and the entry reloads.
-                new_options = entry.options
-                if CONF_HOST in entry.options:
-                    new_options = {**entry.options, CONF_HOST: ip}
-                self._hass.config_entries.async_update_entry(
-                    entry,
-                    data={**entry.data, CONF_HOST: ip},
-                    options=new_options,
-                )
+                for entry in entries:
+                    current = {**entry.data, **entry.options}.get(CONF_HOST)
+                    if current == ip:
+                        continue
+                    _LOGGER.warning(
+                        "%s: LAN IP changed to %s (was %s); updating configuration",
+                        entry.title,
+                        ip,
+                        current,
+                    )
+                    new_options = entry.options
+                    if CONF_HOST in entry.options:
+                        new_options = {**entry.options, CONF_HOST: ip}
+                    self._hass.config_entries.async_update_entry(
+                        entry,
+                        data={**entry.data, CONF_HOST: ip},
+                        options=new_options,
+                    )
         finally:
             self._scanning = False
+
+    def _update_cached_gateway(self, device_id, ip) -> None:
+        """Point a shared TinyTuya parent at its verified new address."""
+        bucket = self._hass.data.get(DOMAIN, {}).get(device_id)
+        if not bucket or not (api := bucket.get("tuyadevice")):
+            return
+        parent = api.parent or api
+        parent.set_socketPersistent(False)
+        parent.address = ip
 
     async def _async_discovery_scan(self, now=None) -> None:
         """Full LAN scan: product-id check for known devices, discover new ones."""
@@ -184,7 +378,9 @@ class TuyaLANRediscovery:
             return
         self._scanning = True
         try:
-            found = await self._hass.async_add_executor_job(_scan_all)
+            found = await async_scan_devices(self._hass)
+            if self._stopped:
+                return
             if not found:
                 return
 
@@ -198,14 +394,22 @@ class TuyaLANRediscovery:
             for entry in self._hass.config_entries.async_entries(DOMAIN):
                 device_id = entry.data.get(CONF_DEVICE_ID)
                 if device_id:
-                    configured[device_id] = entry
+                    configured.setdefault(device_id, []).append(entry)
 
             for gwid, info in by_gwid.items():
-                entry = configured.get(gwid)
-                if entry is not None:
-                    # Skip sub-devices for now, the WiFi reported product id is for the hub
-                    if not entry.data.get(CONF_DEVICE_CID):
-                        await self._check_product(entry, info.get("productKey"))
+                entries = configured.get(gwid)
+                if entries is not None:
+                    # The Wi-Fi product ID belongs to the gateway, not a child.
+                    direct_entry = next(
+                        (
+                            entry
+                            for entry in entries
+                            if not entry.data.get(CONF_DEVICE_CID)
+                        ),
+                        None,
+                    )
+                    if direct_entry:
+                        await self._check_product(direct_entry, info.get("productKey"))
                 else:
                     self._discover_new(gwid, info)
         finally:
@@ -234,6 +438,13 @@ class TuyaLANRediscovery:
     @callback
     def _discover_new(self, gwid, info) -> None:
         """Raise an integration_discovery flow for a not-yet-configured device."""
+        domain_data = self._hass.data.get(DOMAIN, {})
+        cloud_sync_enabled = any(
+            entry.data.get(CONF_TYPE) == CLOUD_ACCOUNT_TYPE
+            for entry in self._hass.config_entries.async_entries(DOMAIN)
+        )
+        if domain_data.get(DATA_CLOUD_IMPORTING) or cloud_sync_enabled:
+            return
         if gwid in self._discovered:
             return
         self._discovered.add(gwid)

@@ -1,5 +1,5 @@
 {
-    "title": "Tuya Local",
+    "title": "Tuya Local Plus",
     "config": {
         "step": {
             "user": {
@@ -26,6 +26,13 @@
                 "data": {
                     "device_id": "Επιλέξτε συσκευή:",
                     "hub_id": "Επιλέξτε gateway:"
+                }
+            },
+            "bulk_import": {
+                "title": "Import Tuya cloud devices",
+                "description": "Select the directly addressable Wi-Fi devices to discover, validate and import locally. Gateway, Bluetooth and Zigbee child devices require separate setup and are not listed.",
+                "data": {
+                    "device_ids": "Devices to import"
                 }
             },
             "search": {
@@ -66,10 +73,18 @@
                 }
             }
         },
+        "progress": {
+            "bulk_import": "Discovering and importing selected devices"
+        },
         "abort": {
             "already_configured": "Έχει ήδη προστεθεί μια συσκευή με αυτό το ID.",
             "not_supported": "Λυπούμαστε, αυτή η συσκευή δεν υποστηρίζεται.",
-            "no_devices": "Αδυναμία εύρεσης μη εγγεγραμμένων συσκευών για αυτό το λογαριασμό."
+            "no_devices": "Αδυναμία εύρεσης μη εγγεγραμμένων συσκευών για αυτό το λογαριασμό.",
+            "bulk_no_devices": "No directly addressable local devices are available for bulk import.",
+            "bulk_complete": "Bulk import complete: {imported} imported, {skipped} already configured, {failed} unavailable or unsupported.",
+            "bulk_connection_failed": "The device was not reachable over the local network.",
+            "bulk_not_supported": "The device could not be matched to a supported local device type safely.",
+            "bulk_cancelled": "The bulk import was cancelled."
         },
         "error": {
             "connection": "Αδυναμία σύνδεσης στη συσκευή σας με αυτά τα στοιχεία. Ίσως είναι προσωρινό πρόβλημα, ή τα στοιχεία που καταχωρίσατε είναι λάθος. Αν επιλέξατε μια συγκεκριμένη έκδοση πρωτοκόλλου, δοκιμάστε 'auto' αντί για αυτήν.",
@@ -81,6 +96,7 @@
         "setup_mode": {
             "options": {
                 "cloud": "Εγκατάσταση συσκευής υποβοηθούμενη απο το SmartLife cloud.",
+                "cloud_bulk": "Import all selected local devices from SmartLife cloud.",
                 "manual": "Εισάγετε χειροκίνητα τις πληροφορίες για τη σύνδεση της συσκευής.",
                 "cloud_fresh_login": "Εγκατάσταση συσκευής υποβοηθούμενη απο το SmartLife cloud με νέο λογαριασμό."
             }
@@ -103,7 +119,8 @@
             "connection": "Αδυναμία σύνδεσης στη συσκευή σας με αυτά τα στοιχεία. Ίσως είναι προσωρινό πρόβλημα, ή τα στοιχεία που καταχωρίσατε είναι λάθος. Αν επιλέξατε μια συγκεκριμένη έκδοση πρωτοκόλλου, δοκιμάστε 'auto' αντί για αυτήν."
         },
         "abort": {
-            "not_supported": "Λυπούμαστε, αυτή η συσκευή δεν υποστηρίζεται."
+            "not_supported": "Λυπούμαστε, αυτή η συσκευή δεν υποστηρίζεται.",
+            "cloud_sync_managed": "Cloud synchronization runs automatically and has no configurable options."
         }
     },
     "services": {

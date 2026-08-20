@@ -20,3 +20,7 @@ send_learned_ir_command:
         entity:
           filter:
             domain: infrared
+
+scan_devices:
+  name: Scan LAN devices
+  description: Run Tuya UDP discovery from the Home Assistant Core network.

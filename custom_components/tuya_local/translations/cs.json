@@ -1,5 +1,5 @@
 {
-    "title": "Tuya Local",
+    "title": "Tuya Local Plus",
     "config": {
         "step": {
             "user": {
@@ -26,6 +26,13 @@
                 "data": {
                     "device_id": "Vyberte zařízení:",
                     "hub_id": "Vyberte bránu:"
+                }
+            },
+            "bulk_import": {
+                "title": "Import Tuya cloud devices",
+                "description": "Select the directly addressable Wi-Fi devices to discover, validate and import locally. Gateway, Bluetooth and Zigbee child devices require separate setup and are not listed.",
+                "data": {
+                    "device_ids": "Devices to import"
                 }
             },
             "search": {
@@ -66,10 +73,18 @@
                 }
             }
         },
+        "progress": {
+            "bulk_import": "Discovering and importing selected devices"
+        },
         "abort": {
             "already_configured": "Zařízení s identifikátorem, který již byl přidán.",
             "not_supported": "Omlouváme se, toto zažízení není podporováno.",
-            "no_devices": "Nelze najít žádná neregistrovaná zařízení pro účet."
+            "no_devices": "Nelze najít žádná neregistrovaná zařízení pro účet.",
+            "bulk_no_devices": "No directly addressable local devices are available for bulk import.",
+            "bulk_complete": "Bulk import complete: {imported} imported, {skipped} already configured, {failed} unavailable or unsupported.",
+            "bulk_connection_failed": "The device was not reachable over the local network.",
+            "bulk_not_supported": "The device could not be matched to a supported local device type safely.",
+            "bulk_cancelled": "The bulk import was cancelled."
         },
         "error": {
             "connection": "Není možné připojit se k zařízené s těmito údaji. Může se jednat o dočasný problém, nebo zadané údaje nejsou správné. Pokud jste vybrali konkrétní verzi protokolu, zkuste místo toho 'auto'.",
@@ -81,6 +96,7 @@
         "setup_mode": {
             "options": {
                 "cloud": "Nastavení zařízení pomocí cloudu SmartLife.",
+                "cloud_bulk": "Import all selected local devices from SmartLife cloud.",
                 "manual": "Ručně zadejte informace o připojení zařízení.",
                 "cloud_fresh_login": "Přihlaste se pomocí jiného účtu SmartLife nebo Tuya."
             }
@@ -103,7 +119,8 @@
             "connection": "Není možné připojit se k zařízené s těmito údaji. Může se jednat o dočasný problém, nebo zadané údaje nejsou správné. Pokud jste vybrali konkrétní verzi protokolu, zkuste místo toho 'auto'."
         },
         "abort": {
-            "not_supported": "Omlouváme se, toto zažízení není podporováno."
+            "not_supported": "Omlouváme se, toto zažízení není podporováno.",
+            "cloud_sync_managed": "Cloud synchronization runs automatically and has no configurable options."
         }
     },
     "services": {

@@ -1,6 +1,13 @@
 DOMAIN = "tuya_local"
 DATA_STORE = "store"
 DATA_DISCOVERY = "discovery"
+DATA_CLOUD_SYNC = "cloud_sync"
+DATA_CLOUD_IMPORTING = "cloud_importing"
+
+CLOUD_ACCOUNT_TYPE = "cloud_account"
+CLOUD_ACCOUNT_UNIQUE_ID = "smartlife_cloud_sync"
+CLOUD_AUTH_STORE = "tuya_local_auth"
+CLOUD_SYNC_SOURCE = "cloud_sync"
 
 CONF_DEVICE_ID = "device_id"
 CONF_LOCAL_KEY = "local_key"

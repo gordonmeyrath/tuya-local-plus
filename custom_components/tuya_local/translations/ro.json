@@ -1,5 +1,5 @@
 {
-    "title": "Tuya Local",
+    "title": "Tuya Local Plus",
     "config": {
         "step": {
             "user": {
@@ -26,6 +26,13 @@
                 "data": {
                     "device_id": "Alegeți dispozitivul:",
                     "hub_id": "Alegeți gateway-ul:"
+                }
+            },
+            "bulk_import": {
+                "title": "Import Tuya cloud devices",
+                "description": "Select the directly addressable Wi-Fi devices to discover, validate and import locally. Gateway, Bluetooth and Zigbee child devices require separate setup and are not listed.",
+                "data": {
+                    "device_ids": "Devices to import"
                 }
             },
             "search": {
@@ -66,10 +73,18 @@
                 }
             }
         },
+        "progress": {
+            "bulk_import": "Discovering and importing selected devices"
+        },
         "abort": {
             "already_configured": "Un dispozitiv cu acest ID a fost deja adăugat.",
             "not_supported": "Ne pare rău, acest dispozitiv nu este suportat.",
-            "no_devices": "Nu a fost posibilă găsirea niciunui dispozitiv neînregistrat pentru cont."
+            "no_devices": "Nu a fost posibilă găsirea niciunui dispozitiv neînregistrat pentru cont.",
+            "bulk_no_devices": "No directly addressable local devices are available for bulk import.",
+            "bulk_complete": "Bulk import complete: {imported} imported, {skipped} already configured, {failed} unavailable or unsupported.",
+            "bulk_connection_failed": "The device was not reachable over the local network.",
+            "bulk_not_supported": "The device could not be matched to a supported local device type safely.",
+            "bulk_cancelled": "The bulk import was cancelled."
         },
         "error": {
             "connection": "Nu s-a putut conecta la dispozitiv cu aceste detalii. Poate fi o problemă temporară sau datele pot fi incorecte. Dacă ați selectat o versiune specifică a protocolului, încercați 'auto' în schimb.",
@@ -81,6 +96,7 @@
         "setup_mode": {
             "options": {
                 "cloud": "Configurare dispozitiv asistată de cloud SmartLife.",
+                "cloud_bulk": "Import all selected local devices from SmartLife cloud.",
                 "manual": "Furnizați manual informațiile de conectare ale dispozitivului.",
                 "cloud_fresh_login": "Configurare dispozitiv asistată de cloud SmartLife cu autentificare nouă."
             }
@@ -103,7 +119,8 @@
             "connection": "Nu s-a putut conecta la dispozitiv cu aceste detalii. Poate fi o problemă temporară sau datele pot fi incorecte. Dacă ați selectat o versiune specifică a protocolului, încercați 'auto' în schimb."
         },
         "abort": {
-            "not_supported": "Ne pare rău, acest dispozitiv nu este suportat."
+            "not_supported": "Ne pare rău, acest dispozitiv nu este suportat.",
+            "cloud_sync_managed": "Cloud synchronization runs automatically and has no configurable options."
         }
     },
     "services": {
@@ -1555,4 +1572,3 @@
         }
     }
 }
-

@@ -3,6 +3,9 @@ products:
   - id: g7rboh0x
     manufacturer: Hornbill
     model: Y4
+  - id: zhsv1w6s7kfrnevj
+    manufacturer: Tuya
+    model: WiFi access
 entities:
   - entity: lock
     dps:

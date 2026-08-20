@@ -13,7 +13,7 @@ from homeassistant.config_entries import (
 )
 from homeassistant.const import CONF_HOST, CONF_NAME
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.data_entry_flow import FlowResult
+from homeassistant.data_entry_flow import FlowResult, FlowResultType, UnknownFlow
 from homeassistant.helpers.selector import (
     QrCodeSelector,
     QrCodeSelectorConfig,
@@ -25,9 +25,12 @@ from homeassistant.helpers.selector import (
 )
 
 from . import DOMAIN
-from .cloud import Cloud
+from .cloud import Cloud, async_load_auth
 from .const import (
     API_PROTOCOL_VERSIONS,
+    CLOUD_ACCOUNT_TYPE,
+    CLOUD_ACCOUNT_UNIQUE_ID,
+    CLOUD_SYNC_SOURCE,
     CONF_DEVICE_CID,
     CONF_DEVICE_ID,
     CONF_LOCAL_KEY,
@@ -37,14 +40,26 @@ from .const import (
     CONF_PROTOCOL_VERSION,
     CONF_TYPE,
     CONF_USER_CODE,
+    DATA_CLOUD_IMPORTING,
     DATA_STORE,
 )
 from .device import TuyaLocalDevice
+from .discovery import async_scan_devices
 from .helpers.config import get_device_id
 from .helpers.device_config import get_config
 from .helpers.log import log_json
 
 _LOGGER = logging.getLogger(__name__)
+BULK_MATCH_MIN_QUALITY = 50
+DATA_BULK_CANCELLED = "bulk_cancelled"
+CATEGORY_TYPE_HINTS = {
+    "cz": ("switch", "plug", "outlet", "socket", "relay", "powerstrip"),
+    "dj": ("light",),
+    "gyd": ("light", "spotlight"),
+    "kg": ("switch", "plug", "outlet", "socket", "relay"),
+    "kqzg": ("air_fryer", "airfryer"),
+    "tdq": ("switch", "plug", "outlet", "socket", "powerstrip"),
+}
 DEVICE_DETAILS_URL = (
     "https://github.com/make-all/tuya-local/blob/main/DEVICE_DETAILS.md"
     "#finding-your-device-id-and-local-key"
@@ -61,12 +76,17 @@ class ConfigFlowHandler(ConfigFlow, domain=DOMAIN):
     __qr_code: str | None = None
     __cloud_devices: dict[str, Any] = {}
     __discovered_device: dict[str, Any] | None = None
+    __bulk_mode = False
 
     def __init__(self) -> None:
         """Initialize the config flow."""
         self.cloud = None
+        self.__bulk_task = None
+        self.__bulk_result = None
+        self.__bulk_total = 0
 
-    def init_cloud(self):
+    async def init_cloud(self):
+        await async_load_auth(self.hass)
         if self.cloud is None:
             self.cloud = Cloud(self.hass)
 
@@ -104,15 +124,18 @@ class ConfigFlowHandler(ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             mode = user_input.get("setup_mode")
-            if mode == "cloud" or mode == "cloud_fresh_login":
-                self.init_cloud()
+            if mode in ("cloud", "cloud_bulk", "cloud_fresh_login"):
+                self.__bulk_mode = mode == "cloud_bulk"
+                await self.init_cloud()
                 try:
                     if mode == "cloud_fresh_login":
                         # Force a fresh login
-                        self.cloud.logout()
+                        await self.cloud.async_logout()
 
                     if self.cloud.is_authenticated:
                         self.__cloud_devices = await self.cloud.async_get_devices()
+                        if self.__bulk_mode:
+                            return await self.async_step_bulk_import()
                         return await self.async_step_choose_device()
                 except Exception as e:
                     # Re-authentication is needed.
@@ -126,7 +149,7 @@ class ConfigFlowHandler(ConfigFlow, domain=DOMAIN):
         fields: OrderedDict[vol.Marker, Any] = OrderedDict()
         fields[vol.Required("setup_mode")] = SelectSelector(
             SelectSelectorConfig(
-                options=["cloud", "manual", "cloud_fresh_login"],
+                options=["cloud", "cloud_bulk", "manual", "cloud_fresh_login"],
                 mode=SelectSelectorMode.LIST,
                 translation_key="setup_mode",
             )
@@ -145,7 +168,7 @@ class ConfigFlowHandler(ConfigFlow, domain=DOMAIN):
         """Step user."""
         errors = {}
         placeholders = {}
-        self.init_cloud()
+        await self.init_cloud()
 
         if user_input is not None:
             response = await self.cloud.async_get_qr_code(user_input[CONF_USER_CODE])
@@ -191,7 +214,7 @@ class ConfigFlowHandler(ConfigFlow, domain=DOMAIN):
                     }
                 ),
             )
-        self.init_cloud()
+        await self.init_cloud()
         if not await self.cloud.async_login():
             # Try to get a new QR code on failure
             response = await self.cloud.async_get_qr_code()
@@ -231,7 +254,371 @@ class ConfigFlowHandler(ConfigFlow, domain=DOMAIN):
                     "product_name"
                 )
             return await self.async_step_local()
+        if self.__bulk_mode:
+            return await self.async_step_bulk_import()
         return await self.async_step_choose_device()
+
+    def _bulk_candidates(self) -> list[SelectOptionDict]:
+        """Return cloud devices that can be imported directly over the LAN."""
+        configured = {
+            get_device_id(entry.data)
+            for entry in self.hass.config_entries.async_entries(DOMAIN)
+            if entry.data.get(CONF_TYPE) != CLOUD_ACCOUNT_TYPE
+            and entry.data.get(CONF_DEVICE_ID)
+        }
+        candidates = []
+        for key, device in self.__cloud_devices.items():
+            if (
+                device.get("exists")
+                or device.get("is_hub")
+                or device.get("sub")
+                or device.get("node_id")
+                or device.get("id") in configured
+                or not device.get(CONF_LOCAL_KEY)
+                or not device.get("support_local", True)
+            ):
+                continue
+            status = "" if device.get("online") else " OFFLINE"
+            candidates.append(
+                SelectOptionDict(
+                    value=key,
+                    label=(
+                        f"{device.get('name') or device.get('id')} "
+                        f"({device.get('product_name') or 'Unknown'}){status}"
+                    ),
+                )
+            )
+        return candidates
+
+    async def async_step_bulk_import(self, user_input=None):
+        """Import multiple directly addressable devices from Tuya cloud."""
+        candidates = self._bulk_candidates()
+        if not candidates:
+            self.__bulk_result = {"imported": 0, "skipped": 0, "failed": 0}
+            return await self.async_step_bulk_complete()
+
+        if user_input is None:
+            selector = SelectSelector(
+                SelectSelectorConfig(
+                    options=candidates,
+                    multiple=True,
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            )
+            return self.async_show_form(
+                step_id="bulk_import",
+                data_schema=vol.Schema(
+                    {
+                        vol.Required(
+                            "device_ids",
+                            default=[candidate["value"] for candidate in candidates],
+                        ): vol.All(selector, vol.Length(min=1)),
+                    }
+                ),
+            )
+
+        selected = list(dict.fromkeys(user_input["device_ids"]))
+        self.hass.data.setdefault(DOMAIN, {}).setdefault(
+            DATA_BULK_CANCELLED, set()
+        ).discard(self.flow_id)
+        self.hass.data[DOMAIN].setdefault(DATA_CLOUD_IMPORTING, set()).add(self.flow_id)
+        self.__bulk_total = len(selected)
+        self.__bulk_task = self.hass.async_create_task(
+            self._async_bulk_import(selected)
+        )
+        return self.async_show_progress(
+            step_id="bulk_progress",
+            progress_action="bulk_import",
+            progress_task=self.__bulk_task,
+        )
+
+    async def async_step_bulk_progress(self, user_input=None):
+        """Show progress while selected devices are imported."""
+        if not self.__bulk_task.done():
+            return self.async_show_progress(
+                step_id="bulk_progress",
+                progress_action="bulk_import",
+                progress_task=self.__bulk_task,
+            )
+        try:
+            self.__bulk_result = self.__bulk_task.result()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # keep the config flow usable after scan failures
+            _LOGGER.exception("Bulk import task failed: %s", exc)
+            self.__bulk_result = {
+                "imported": 0,
+                "skipped": 0,
+                "failed": self.__bulk_total,
+            }
+        finally:
+            self.hass.data.setdefault(DOMAIN, {}).setdefault(
+                DATA_CLOUD_IMPORTING, set()
+            ).discard(self.flow_id)
+        return self.async_show_progress_done(next_step_id="bulk_complete")
+
+    async def async_step_bulk_complete(self, user_input=None):
+        """Create the persistent cloud-sync entry after initial bulk import."""
+        result = self.__bulk_result or {"imported": 0, "skipped": 0, "failed": 0}
+        await self.async_set_unique_id(CLOUD_ACCOUNT_UNIQUE_ID)
+        self._abort_if_unique_id_configured()
+        return self.async_create_entry(
+            title="Smart Life cloud sync",
+            data={
+                CONF_TYPE: CLOUD_ACCOUNT_TYPE,
+                "initial_import": result,
+            },
+        )
+
+    async def _async_bulk_import(self, selected):
+        """Discover once and import selected devices with bounded concurrency."""
+        discovered = await async_scan_devices(self.hass)
+        lan_devices = {}
+        for address, info in discovered.items():
+            device_id = info.get("gwId") or info.get("id")
+            if device_id:
+                lan_devices[device_id] = {**info, "ip": info.get("ip") or address}
+
+        semaphore = asyncio.Semaphore(3)
+
+        async def import_one(key):
+            cloud_device = self.__cloud_devices[key]
+            device_id = cloud_device["id"]
+            local = lan_devices.get(device_id)
+            if not local or not local.get("ip"):
+                return "failed"
+            try:
+                async with semaphore, asyncio.timeout(120):
+                    result = await self.hass.config_entries.flow.async_init(
+                        DOMAIN,
+                        context={
+                            "source": CLOUD_SYNC_SOURCE,
+                            "bulk_parent": self.flow_id,
+                        },
+                        data={
+                            CONF_DEVICE_ID: device_id,
+                            CONF_HOST: local["ip"],
+                            CONF_LOCAL_KEY: cloud_device[CONF_LOCAL_KEY],
+                            CONF_PROTOCOL_VERSION: local.get("version") or "auto",
+                            CONF_POLL_ONLY: False,
+                            CONF_NAME: cloud_device.get("name")
+                            or cloud_device.get("product_name"),
+                            "product_ids": list(
+                                dict.fromkeys(
+                                    product_id
+                                    for product_id in (
+                                        cloud_device.get("product_id"),
+                                        local.get("productKey"),
+                                    )
+                                    if product_id
+                                )
+                            ),
+                            "category": cloud_device.get("category"),
+                            "bulk_parent": self.flow_id,
+                        },
+                    )
+            except Exception as exc:  # isolate one device from the whole import
+                _LOGGER.warning("Bulk import failed for %s: %s", device_id, exc)
+                return "failed"
+            if result["type"] == FlowResultType.CREATE_ENTRY:
+                return "imported"
+            elif result.get("reason") in (
+                "already_configured",
+                "already_in_progress",
+            ):
+                return "skipped"
+            return "failed"
+
+        counts = {"imported": 0, "skipped": 0, "failed": 0}
+        tasks = [self.hass.async_create_task(import_one(key)) for key in selected]
+        try:
+            for completed, task in enumerate(asyncio.as_completed(tasks), start=1):
+                counts[await task] += 1
+                self.async_update_progress(completed / len(tasks))
+            return counts
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def async_step_import(self, import_data):
+        """Validate and automatically create one cloud bulk-import entry."""
+        bulk_parent = import_data.get("bulk_parent")
+        cancelled = self.hass.data.setdefault(DOMAIN, {}).setdefault(
+            DATA_BULK_CANCELLED, set()
+        )
+        if bulk_parent in cancelled:
+            return self.async_abort(reason="bulk_cancelled")
+        device_id = import_data[CONF_DEVICE_ID]
+        if any(
+            entry.data.get(CONF_TYPE) != CLOUD_ACCOUNT_TYPE
+            and get_device_id(entry.data) == device_id
+            for entry in self.hass.config_entries.async_entries(DOMAIN)
+            if entry.data.get(CONF_DEVICE_ID)
+        ):
+            return self.async_abort(reason="already_configured")
+        await self.async_set_unique_id(device_id)
+        self._abort_if_unique_id_configured()
+
+        protocol = import_data.get(CONF_PROTOCOL_VERSION, "auto")
+        if protocol != "auto":
+            protocol = float(protocol)
+        config = {
+            CONF_DEVICE_ID: device_id,
+            CONF_HOST: import_data[CONF_HOST],
+            CONF_LOCAL_KEY: import_data[CONF_LOCAL_KEY],
+            CONF_PROTOCOL_VERSION: protocol,
+            CONF_POLL_ONLY: import_data.get(CONF_POLL_ONLY, False),
+        }
+        device = await async_test_connection(config, self.hass)
+        if device is None:
+            return self.async_abort(reason="bulk_connection_failed")
+
+        product_ids = import_data.get("product_ids") or [import_data.get("product_id")]
+        for product_id in product_ids:
+            if not product_id:
+                continue
+            device.set_detected_product_id(product_id)
+
+        best_type = None
+        best_quality = 0
+        best_manufacturer = None
+        best_model = None
+        best_types = []
+        matches = []
+        for device_type in await device.async_possible_types():
+            quality = device_type.match_quality(
+                device._get_cached_state(), device._product_ids
+            )
+            matches.append((device_type, quality))
+            if quality < best_quality:
+                continue
+            if quality == best_quality and best_type is not None:
+                if device_type.config_type not in {
+                    match.config_type for match in best_types
+                }:
+                    best_types.append(device_type)
+                continue
+            best_type = device_type
+            best_types = [device_type]
+            best_quality = quality
+            product_entries = device_type.product_display_entries(device._product_ids)
+            best_manufacturer, best_model = next(iter(product_entries), (None, None))
+
+        ambiguous = len(best_types) > 1
+        if best_type is None or best_quality < BULK_MATCH_MIN_QUALITY:
+            _LOGGER.warning(
+                "%s: automatic import skipped; best type=%s quality=%s ambiguous=%s category=%s",
+                import_data.get(CONF_NAME) or device_id,
+                best_type.config_type if best_type else "none",
+                best_quality,
+                ambiguous,
+                import_data.get("category"),
+            )
+            return self.async_abort(reason="bulk_not_supported")
+        category = import_data.get("category")
+        hints = CATEGORY_TYPE_HINTS.get(category)
+        if hints and not any(hint in best_type.config_type for hint in hints):
+            rejected_type = best_type.config_type
+            compatible = [
+                (match, quality)
+                for match, quality in matches
+                if any(hint in match.config_type for hint in hints)
+            ]
+            compatible_quality = max((quality for _, quality in compatible), default=0)
+            if compatible_quality < BULK_MATCH_MIN_QUALITY:
+                _LOGGER.warning(
+                    "%s: rejecting device type %s for Tuya category %s",
+                    device_id,
+                    best_type.config_type,
+                    category,
+                )
+                return self.async_abort(reason="bulk_not_supported")
+            best_types = [
+                match for match, quality in compatible if quality == compatible_quality
+            ]
+            best_type = best_types[0]
+            best_quality = compatible_quality
+            ambiguous = len(best_types) > 1
+            product_entries = best_type.product_display_entries(device._product_ids)
+            best_manufacturer, best_model = next(iter(product_entries), (None, None))
+            _LOGGER.warning(
+                "%s: selected category-compatible type %s instead of %s",
+                import_data.get(CONF_NAME) or device_id,
+                best_type.config_type,
+                rejected_type,
+            )
+        if ambiguous and (
+            not hints
+            or not all(
+                any(hint in match.config_type for hint in hints) for match in best_types
+            )
+        ):
+            _LOGGER.warning(
+                "%s: automatic import skipped; incompatible tied profiles: %s",
+                import_data.get(CONF_NAME) or device_id,
+                ", ".join(match.config_type for match in best_types),
+            )
+            return self.async_abort(reason="bulk_not_supported")
+        if ambiguous:
+            _LOGGER.warning(
+                "%s: selecting category-compatible profile %s from tied matches",
+                import_data.get(CONF_NAME) or device_id,
+                best_type.config_type,
+            )
+        if best_quality < 100 and not hints:
+            _LOGGER.warning(
+                "%s: automatic import skipped; non-exact type %s has no category validation",
+                import_data.get(CONF_NAME) or device_id,
+                best_type.config_type,
+            )
+            return self.async_abort(reason="bulk_not_supported")
+
+        config[CONF_TYPE] = best_type.config_type
+        if best_manufacturer:
+            config[CONF_MANUFACTURER] = best_manufacturer
+        if best_model:
+            config[CONF_MODEL] = best_model
+        if protocol == "auto" and device._protocol_configured != "auto":
+            config[CONF_PROTOCOL_VERSION] = device._protocol_configured
+
+        title = import_data.get(CONF_NAME)
+        if not title:
+            matched_config = await self.hass.async_add_executor_job(
+                get_config, best_type.config_type
+            )
+            title = matched_config.name
+        if bulk_parent in cancelled:
+            return self.async_abort(reason="bulk_cancelled")
+        return self.async_create_entry(title=title, data=config)
+
+    async def async_step_cloud_sync(self, import_data):
+        """Import one device discovered by bulk or periodic cloud sync."""
+        return await self.async_step_import(import_data)
+
+    @callback
+    def async_remove(self) -> None:
+        """Cancel child imports when the parent bulk flow is removed."""
+        if self.__bulk_task is None or self.__bulk_task.done():
+            return
+        self.hass.data.setdefault(DOMAIN, {}).setdefault(
+            DATA_BULK_CANCELLED, set()
+        ).add(self.flow_id)
+        self.hass.data[DOMAIN].setdefault(DATA_CLOUD_IMPORTING, set()).discard(
+            self.flow_id
+        )
+        if not self.__bulk_task.done():
+            self.__bulk_task.cancel()
+        child_flows = self.hass.config_entries.flow.async_progress_by_handler(
+            DOMAIN,
+            include_uninitialized=True,
+            match_context={"bulk_parent": self.flow_id},
+        )
+        for child in child_flows:
+            try:
+                self.hass.config_entries.flow.async_abort(child["flow_id"])
+            except UnknownFlow:
+                pass
 
     async def async_step_choose_device(self, user_input=None):
         errors = {}
@@ -520,7 +907,7 @@ class ConfigFlowHandler(ConfigFlow, domain=DOMAIN):
                     self.__discovered_device.get("local_product_id"),
                 )
             try:
-                self.init_cloud()
+                await self.init_cloud()
                 model = await self.cloud.async_get_datamodel(
                     self.__discovered_device.get("id"),
                 )
@@ -616,6 +1003,8 @@ class OptionsFlowHandler(OptionsFlow):
 
     async def async_step_user(self, user_input=None):
         """Manage the options."""
+        if self.config_entry.data.get(CONF_TYPE) == CLOUD_ACCOUNT_TYPE:
+            return self.async_abort(reason="cloud_sync_managed")
         errors = {}
         config = {**self.config_entry.data, **self.config_entry.options}
 

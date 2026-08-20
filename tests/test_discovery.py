@@ -7,13 +7,16 @@ import pytest
 from homeassistant.const import CONF_HOST
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.tuya_local import discovery
+from custom_components.tuya_local import async_setup, discovery
 from custom_components.tuya_local.const import (
+    CLOUD_ACCOUNT_TYPE,
+    CONF_DEVICE_CID,
     CONF_DEVICE_ID,
     CONF_LOCAL_KEY,
     CONF_POLL_ONLY,
     CONF_PROTOCOL_VERSION,
     CONF_TYPE,
+    DATA_CLOUD_IMPORTING,
     DATA_DISCOVERY,
     DOMAIN,
 )
@@ -32,20 +35,23 @@ def auto_enable_custom_integrations(enable_custom_integrations):
     yield
 
 
-def _make_entry(hass, host="192.168.1.10", options=None):
+def _make_entry(hass, host="192.168.1.10", options=None, cid=None, title="thermostat"):
+    data = {
+        CONF_DEVICE_ID: DEVID,
+        CONF_HOST: host,
+        CONF_LOCAL_KEY: TESTKEY,
+        CONF_POLL_ONLY: False,
+        CONF_PROTOCOL_VERSION: "auto",
+        CONF_TYPE: "polytherm_polyalpha_thermostat",
+    }
+    if cid:
+        data[CONF_DEVICE_CID] = cid
     entry = MockConfigEntry(
         domain=DOMAIN,
         version=13,
         minor_version=20,
-        title="thermostat",
-        data={
-            CONF_DEVICE_ID: DEVID,
-            CONF_HOST: host,
-            CONF_LOCAL_KEY: TESTKEY,
-            CONF_POLL_ONLY: False,
-            CONF_PROTOCOL_VERSION: "auto",
-            CONF_TYPE: "polytherm_polyalpha_thermostat",
-        },
+        title=title,
+        data=data,
         options=options or {},
     )
     entry.add_to_hass(hass)
@@ -67,6 +73,10 @@ async def test_sweep_updates_unreachable_changed_host(hass, caplog, mocker):
     mocker.patch(
         "custom_components.tuya_local.discovery._find_device",
         return_value={"ip": "192.168.1.55", "id": DEVID},
+    )
+    mocker.patch(
+        "custom_components.tuya_local.discovery._validate_candidate",
+        return_value=True,
     )
 
     with caplog.at_level(
@@ -143,6 +153,10 @@ async def test_sweep_updates_host_stored_in_options(hass, mocker):
         "custom_components.tuya_local.discovery._find_device",
         return_value={"ip": "192.168.1.55"},
     )
+    mocker.patch(
+        "custom_components.tuya_local.discovery._validate_candidate",
+        return_value=True,
+    )
 
     await TuyaLANRediscovery(hass)._async_sweep()
     await hass.async_block_till_done()
@@ -160,6 +174,10 @@ async def test_sweep_scans_when_no_device_object(hass, mocker):
         "custom_components.tuya_local.discovery._find_device",
         return_value={"ip": "192.168.1.77"},
     )
+    mocker.patch(
+        "custom_components.tuya_local.discovery._validate_candidate",
+        return_value=True,
+    )
 
     await TuyaLANRediscovery(hass)._async_sweep()
     await hass.async_block_till_done()
@@ -168,28 +186,90 @@ async def test_sweep_scans_when_no_device_object(hass, mocker):
 
 
 @pytest.mark.asyncio
+async def test_sweep_updates_gateway_siblings_once(hass, mocker):
+    """Child entries sharing a gateway relocate together after one LAN lookup."""
+    first = _make_entry(hass, cid="child-1", title="child one")
+    second = _make_entry(hass, cid="child-2", title="child two")
+    _set_device(hass, returned_state=False, device_id=f"{DEVID}/child-1")
+    _set_device(hass, returned_state=False, device_id=f"{DEVID}/child-2")
+    parent = mocker.MagicMock()
+    parent.parent = None
+    hass.data[DOMAIN][DEVID] = {"tuyadevice": parent}
+    find = mocker.patch(
+        "custom_components.tuya_local.discovery._find_device",
+        return_value={"ip": "192.168.1.55", "id": DEVID},
+    )
+    mocker.patch(
+        "custom_components.tuya_local.discovery._validate_candidate",
+        return_value=True,
+    )
+
+    await TuyaLANRediscovery(hass)._async_sweep()
+    await hass.async_block_till_done()
+
+    find.assert_called_once()
+    assert first.data[CONF_HOST] == "192.168.1.55"
+    assert second.data[CONF_HOST] == "192.168.1.55"
+    assert parent.address == "192.168.1.55"
+    parent.set_socketPersistent.assert_called_once_with(False)
+
+
+@pytest.mark.asyncio
+async def test_sweep_skips_gateway_when_sibling_is_healthy(hass, mocker):
+    """One healthy child proves the shared gateway did not move."""
+    _make_entry(hass, cid="child-1", title="child one")
+    _make_entry(hass, cid="child-2", title="child two")
+    _set_device(hass, returned_state=False, device_id=f"{DEVID}/child-1")
+    _set_device(hass, returned_state=True, device_id=f"{DEVID}/child-2")
+    find = mocker.patch("custom_components.tuya_local.discovery._find_device")
+
+    await TuyaLANRediscovery(hass)._async_sweep()
+
+    find.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_stopped_sweep_does_not_update_entry(hass, mocker):
+    """A scan completing after shutdown cannot mutate configuration."""
+    entry = _make_entry(hass)
+    _set_device(hass, returned_state=False)
+    rediscovery = TuyaLANRediscovery(hass)
+
+    async def stop_during_scan(*args):
+        rediscovery.async_stop()
+        return {"ip": "192.168.1.55", "id": DEVID}
+
+    mocker.patch(
+        "custom_components.tuya_local.discovery.async_find_device",
+        side_effect=stop_during_scan,
+    )
+
+    await rediscovery._async_sweep()
+
+    assert entry.data[CONF_HOST] == "192.168.1.10"
+
+
+@pytest.mark.asyncio
 async def test_start_is_idempotent_and_stop_cancels(hass, mocker):
     """async_start_discovery schedules the sweep + scan intervals; stop cancels both."""
-    # unsub_sweep = mocker.MagicMock()
+    unsub_sweep = mocker.MagicMock()
     unsub_scan = mocker.MagicMock()
     track = mocker.patch(
         "custom_components.tuya_local.discovery.async_track_time_interval",
-        side_effect=[unsub_scan],
+        side_effect=[unsub_sweep, unsub_scan],
     )
 
     await async_start_discovery(hass)
     rediscovery = hass.data[DOMAIN][DATA_DISCOVERY]
     assert isinstance(rediscovery, TuyaLANRediscovery)
-    # assert track.call_count == 2
-    assert track.call_count == 1
+    assert track.call_count == 2
 
     # Second call must not schedule more intervals (singleton).
     await async_start_discovery(hass)
-    # assert track.call_count == 2
-    assert track.call_count == 1
+    assert track.call_count == 2
 
     async_stop_discovery(hass)
-    # unsub_sweep.assert_called_once()
+    unsub_sweep.assert_called_once()
     unsub_scan.assert_called_once()
     assert DATA_DISCOVERY not in hass.data[DOMAIN]
 
@@ -360,6 +440,40 @@ async def test_discovery_raises_flow_only_once_per_device(hass, mocker):
 
 
 @pytest.mark.asyncio
+async def test_discovery_defers_to_enabled_cloud_sync(hass, mocker):
+    """Automatic cloud sync prevents competing interactive discovery flows."""
+    MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="smartlife_cloud_sync",
+        data={CONF_TYPE: CLOUD_ACCOUNT_TYPE},
+    ).add_to_hass(hass)
+    mocker.patch(
+        "custom_components.tuya_local.discovery._scan_all",
+        return_value=_scan_result(gwid="bfunknown000000000", ip="192.168.1.99"),
+    )
+    init = _patch_flow_init(hass, mocker)
+
+    await TuyaLANRediscovery(hass)._async_discovery_scan()
+
+    init.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discovery_defers_during_initial_bulk_import(hass, mocker):
+    """Initial bulk import owns discovery identities until it finishes."""
+    hass.data[DOMAIN] = {DATA_CLOUD_IMPORTING: {"bulk-flow"}}
+    mocker.patch(
+        "custom_components.tuya_local.discovery._scan_all",
+        return_value=_scan_result(gwid="bfunknown000000000", ip="192.168.1.99"),
+    )
+    init = _patch_flow_init(hass, mocker)
+
+    await TuyaLANRediscovery(hass)._async_discovery_scan()
+
+    init.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_discovery_scan_handles_empty_result(hass, mocker):
     """An empty scan (e.g. socket error) does nothing and does not raise."""
     _make_entry(hass, host="192.168.1.10")
@@ -377,3 +491,133 @@ def test_module_exposes_expected_intervals():
     """Guard the cadences against accidental change."""
     assert discovery.SWEEP_INTERVAL.total_seconds() == 60
     assert discovery.SCAN_INTERVAL.total_seconds() == 600
+
+
+@pytest.mark.asyncio
+async def test_sweep_rejects_unverified_candidate(hass, caplog, mocker):
+    """A scanner result that does not authenticate must never replace the host."""
+    entry = _make_entry(hass, host="192.168.1.10")
+    _set_device(hass, returned_state=False)
+    mocker.patch(
+        "custom_components.tuya_local.discovery._find_device",
+        return_value={"ip": "172.18.0.1", "id": DEVID},
+    )
+    mocker.patch(
+        "custom_components.tuya_local.discovery._validate_candidate",
+        return_value=False,
+    )
+
+    with caplog.at_level(
+        logging.WARNING, logger="custom_components.tuya_local.discovery"
+    ):
+        await TuyaLANRediscovery(hass)._async_sweep()
+
+    assert entry.data[CONF_HOST] == "192.168.1.10"
+    assert "ignoring unverified LAN address" in caplog.text
+
+
+def test_validate_candidate_rejects_public_and_invalid_addresses():
+    """Discovery can only relocate devices to valid private LAN addresses."""
+    config = {
+        CONF_DEVICE_ID: DEVID,
+        CONF_LOCAL_KEY: TESTKEY,
+        CONF_PROTOCOL_VERSION: 3.3,
+    }
+
+    assert not discovery._validate_candidate(config, "not-an-ip")
+    assert not discovery._validate_candidate(config, "8.8.8.8")
+    assert not discovery._validate_candidate(config, "127.0.0.1")
+
+
+def test_validate_candidate_requires_authenticated_response(mocker):
+    """Only an error-free TinyTuya response verifies a new private address."""
+    device_class = mocker.patch(
+        "custom_components.tuya_local.discovery.tinytuya.Device"
+    )
+    device = device_class.return_value
+    config = {
+        CONF_DEVICE_ID: DEVID,
+        CONF_LOCAL_KEY: TESTKEY,
+        CONF_PROTOCOL_VERSION: 3.3,
+    }
+    device.status.return_value = {"dps": {"1": True}}
+    assert discovery._validate_candidate(config, "192.168.1.55")
+
+    device.status.return_value = {}
+    assert not discovery._validate_candidate(config, "192.168.1.56")
+
+    device.status.return_value = {"Error": "Invalid JSON response", "Err": "900"}
+    assert not discovery._validate_candidate(config, "192.168.1.57")
+
+    config[CONF_PROTOCOL_VERSION] = 3.1
+    assert not discovery._validate_candidate(config, "192.168.1.58")
+
+
+def test_validate_candidate_uses_child_id_and_accepts_empty_dps(mocker):
+    """Gateway children are authenticated through their CID, even with no DPS."""
+    device_class = mocker.patch(
+        "custom_components.tuya_local.discovery.tinytuya.Device"
+    )
+    parent = mocker.MagicMock()
+    parent.parent = None
+    child = mocker.MagicMock()
+    child.parent = parent
+    child.status.return_value = {"dps": {}}
+    device_class.side_effect = [parent, child]
+    config = {
+        CONF_DEVICE_ID: DEVID,
+        CONF_DEVICE_CID: "child-1",
+        CONF_LOCAL_KEY: TESTKEY,
+        CONF_PROTOCOL_VERSION: 3.3,
+    }
+
+    assert discovery._validate_candidate(config, "192.168.1.55")
+    assert device_class.call_args_list == [
+        mocker.call(DEVID, "192.168.1.55", TESTKEY),
+        mocker.call("child-1", cid="child-1", parent=parent),
+    ]
+
+
+def test_force_scan_uses_keys_without_printing_payloads(mocker, capsys):
+    """Force scan passes cloud credentials and suppresses TinyTuya probe output."""
+    scan = mocker.patch(
+        "custom_components.tuya_local.discovery.scanner.devices",
+        side_effect=lambda **kwargs: print("encrypted probe") or {"result": kwargs},
+    )
+
+    result = discovery._force_scan(
+        ["10.3.30.0/24"],
+        [{"id": DEVID, CONF_LOCAL_KEY: TESTKEY, "name": "Test device"}],
+    )
+
+    assert capsys.readouterr().out == ""
+    assert result["result"]["forcescan"] == ["10.3.30.0/24"]
+    assert result["result"]["tuyadevices"] == [
+        {"id": DEVID, "key": TESTKEY, "name": "Test device"}
+    ]
+    scan.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_scan_service_runs_in_home_assistant(hass, mocker):
+    """The diagnostic service returns the Core-side UDP discovery count."""
+    mocker.patch(
+        "custom_components.tuya_local.async_load_auth",
+        new=AsyncMock(return_value=None),
+    )
+    scan = mocker.patch(
+        "custom_components.tuya_local.async_scan_devices",
+        new=AsyncMock(return_value={"10.3.30.10": {}, "10.3.30.11": {}}),
+    )
+    await async_setup(hass, {})
+
+    response = await hass.services.async_call(
+        DOMAIN,
+        "scan_devices",
+        {},
+        blocking=True,
+        return_response=True,
+    )
+
+    assert response == {"devices": 2}
+    scan.assert_awaited_once_with(hass)

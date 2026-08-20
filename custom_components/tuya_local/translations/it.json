@@ -1,5 +1,5 @@
 {
-    "title": "Tuya Local",
+    "title": "Tuya Local Plus",
     "config": {
         "step": {
             "user": {
@@ -26,6 +26,13 @@
                 "data": {
                     "device_id": "Seleziona dispositivo:",
                     "hub_id": "Seleziona gateway:"
+                }
+            },
+            "bulk_import": {
+                "title": "Import Tuya cloud devices",
+                "description": "Select the directly addressable Wi-Fi devices to discover, validate and import locally. Gateway, Bluetooth and Zigbee child devices require separate setup and are not listed.",
+                "data": {
+                    "device_ids": "Devices to import"
                 }
             },
             "search": {
@@ -66,10 +73,18 @@
                 }
             }
         },
+        "progress": {
+            "bulk_import": "Discovering and importing selected devices"
+        },
         "abort": {
             "already_configured": "E' già presente un dispositivo con l'ID inserito.",
             "not_supported": "Spiacente, questo dispositivo non è supportato.",
-            "no_devices": "Impossibile trovare dispositivi non registrati per l'account."
+            "no_devices": "Impossibile trovare dispositivi non registrati per l'account.",
+            "bulk_no_devices": "No directly addressable local devices are available for bulk import.",
+            "bulk_complete": "Bulk import complete: {imported} imported, {skipped} already configured, {failed} unavailable or unsupported.",
+            "bulk_connection_failed": "The device was not reachable over the local network.",
+            "bulk_not_supported": "The device could not be matched to a supported local device type safely.",
+            "bulk_cancelled": "The bulk import was cancelled."
         },
         "error": {
             "connection": "Impossibile connettersi al dispositivo con quei dettagli. Potrebbe essere un problema intermittente o potrebbero essere errati. Se hai selezionato una versione specifica del protocollo, prova invece 'auto'.",
@@ -81,6 +96,7 @@
         "setup_mode": {
             "options": {
                 "cloud": "Configurazione del dispositivo SmartLife assistita da cloud.",
+                "cloud_bulk": "Import all selected local devices from SmartLife cloud.",
                 "manual": "Inserisci manualmente le informazioni sulla connessione del dispositivo.",
                 "cloud_fresh_login": "Configurazione del dispositivo SmartLife assistita da cloud con accesso fresco."
             }
@@ -103,7 +119,8 @@
             "connection": "Impossibile connettersi al dispositivo con quei dettagli. Potrebbe essere un problema intermittente o potrebbero essere errati. Se hai selezionato una versione specifica del protocollo, prova invece 'auto'."
         },
         "abort": {
-            "not_supported": "Spiacente, questo dispositivo non è supportato."
+            "not_supported": "Spiacente, questo dispositivo non è supportato.",
+            "cloud_sync_managed": "Cloud synchronization runs automatically and has no configurable options."
         }
     },
     "services": {

@@ -3,8 +3,8 @@ requires = ["uv_build >=0.11.25,<0.13"]
 build-backend = "uv_build"
 
 [project]
-name = "tuya-local"
-description = "A Home Assistant integration for local control of Tuya devices."
+name = "tuya-local-plus"
+description = "Local Tuya control with safe DHCP rediscovery and cloud bulk import."
 version = "0.0.0"
 requires-python = ">=3.14.2"
 dependencies = [

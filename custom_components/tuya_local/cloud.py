@@ -2,6 +2,7 @@ import logging
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
 from tuya_sharing import (
     CustomerDevice,
     LoginControl,
@@ -11,6 +12,7 @@ from tuya_sharing import (
 )
 
 from .const import (
+    CLOUD_AUTH_STORE,
     CONF_DEVICE_CID,
     CONF_ENDPOINT,
     CONF_LOCAL_KEY,
@@ -26,6 +28,7 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+AUTH_STORE_VERSION = 1
 
 HUB_CATEGORIES = [
     "wgsxj",  # Gateway camera
@@ -56,9 +59,16 @@ class Cloud:
         self.__hass = hass
         self.__error_code = None
         self.__error_msg = None
-        # Restore cached authentication
-        if cached := self.__hass.data[DOMAIN].get("auth_cache"):
+        # Restore cached authentication. Persistent storage is loaded lazily by
+        # async_initialize so constructing this helper never performs I/O.
+        domain_data = self.__hass.data.setdefault(DOMAIN, {})
+        if cached := domain_data.get("auth_cache"):
             self.__authentication = cached
+
+    async def async_initialize(self) -> None:
+        """Load persisted cloud authentication when memory cache is empty."""
+        if not self.__authentication:
+            self.__authentication = await async_load_auth(self.__hass) or {}
 
     async def async_get_qr_code(self, user_code: str | None = None) -> bool:
         """Get QR code from Tuya server for user code authentication."""
@@ -110,19 +120,19 @@ class Cloud:
                     "refresh_token": info["refresh_token"],
                 },
             }
-            self.__hass.data[DOMAIN]["auth_cache"] = self.__authentication
+            await async_save_auth(self.__hass, self.__authentication)
         else:
             _LOGGER.warning("Login failed: %s", info)
             self.__error_code = info.get(TUYA_RESPONSE_CODE, {})
             self.__error_msg = info.get(TUYA_RESPONSE_MSG, "Unknown error")
             # Ensure expired authentication is cleared on next attempt
-            self.__hass.data[DOMAIN]["auth_cache"] = None
+            await async_clear_auth(self.__hass)
             self.__authentication = {}
         return success
 
     async def async_get_devices(self) -> dict[str, Any]:
         """Get all devices associated with the account."""
-        token_listener = TokenListener(self.__hass)
+        token_listener = TokenListener(self.__hass, self._async_update_token)
         manager = Manager(
             TUYA_CLIENT_ID,
             self.__authentication["user_code"],
@@ -157,6 +167,7 @@ class Cloud:
                 "uid": device.uid,
                 "uuid": device.uuid,
                 "support_local": device.support_local,
+                "sub": getattr(device, "sub", False),
                 CONF_DEVICE_CID: None,
                 "version": None,
                 "is_hub": (
@@ -187,7 +198,7 @@ class Cloud:
 
     async def async_get_datamodel(self, device_id) -> dict[str, Any] | None:
         """Get the data model for the specified device (QueryThingsDataModel)."""
-        token_listener = TokenListener(self.__hass)
+        token_listener = TokenListener(self.__hass, self._async_update_token)
         manager = Manager(
             TUYA_CLIENT_ID,
             self.__authentication["user_code"],
@@ -217,12 +228,24 @@ class Cloud:
                 )
         return transform
 
-    def logout(self) -> None:
+    async def async_logout(self) -> None:
         """Logout from the Tuya cloud."""
+        self.logout()
+        await _auth_store(self.__hass).async_remove()
+
+    def logout(self) -> None:
+        """Clear in-memory authentication immediately."""
         _LOGGER.debug("Logging out from Tuya cloud")
-        # Clear authentication cache
-        self.__hass.data[DOMAIN]["auth_cache"] = None
+        self.__hass.data.setdefault(DOMAIN, {})["auth_cache"] = None
         self.__authentication = {}
+
+    async def _async_update_token(self, token_info: dict[str, Any]) -> None:
+        """Persist a refreshed SDK token on Home Assistant's event loop."""
+        self.__authentication = {
+            **self.__authentication,
+            "token_info": token_info,
+        }
+        await async_save_auth(self.__hass, self.__authentication)
 
     @property
     def is_authenticated(self) -> bool:
@@ -284,9 +307,42 @@ class TokenListener(SharingTokenListener):
     """Listener for upstream token updates.
     This is only needed to get some debug output when tokens are refreshed."""
 
-    def __init__(self, hass: HomeAssistant):
+    def __init__(self, hass: HomeAssistant, update_callback=None):
         self.__hass = hass
+        self.__update_callback = update_callback
 
     def update_token(self, token_info: dict[str, Any]) -> None:
         """Update the token information."""
         _LOGGER.debug("Token updated")
+        # The sharing SDK invokes this listener from an executor thread.
+        if self.__update_callback is not None:
+            self.__hass.add_job(self.__update_callback, token_info)
+
+
+def _auth_store(hass: HomeAssistant) -> Store:
+    """Return the private persistent cloud-authentication store."""
+    return Store(hass, AUTH_STORE_VERSION, CLOUD_AUTH_STORE, private=True)
+
+
+async def async_load_auth(hass: HomeAssistant) -> dict[str, Any] | None:
+    """Load and cache usable cloud authentication."""
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    if cached := domain_data.get("auth_cache"):
+        return cached
+    authentication = await _auth_store(hass).async_load()
+    if not isinstance(authentication, dict) or not authentication.get("token_info"):
+        return None
+    domain_data["auth_cache"] = authentication
+    return authentication
+
+
+async def async_save_auth(hass: HomeAssistant, authentication: dict[str, Any]) -> None:
+    """Cache and persist cloud authentication."""
+    hass.data.setdefault(DOMAIN, {})["auth_cache"] = authentication
+    await _auth_store(hass).async_save(authentication)
+
+
+async def async_clear_auth(hass: HomeAssistant) -> None:
+    """Clear cached and persisted cloud authentication."""
+    hass.data.setdefault(DOMAIN, {})["auth_cache"] = None
+    await _auth_store(hass).async_remove()

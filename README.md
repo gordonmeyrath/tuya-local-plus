@@ -1,5 +1,34 @@
 ![logo](custom_components/tuya_local/brand/icon.svg) 
 
+# Tuya Local Plus
+
+Tuya Local Plus is a Home Assistant integration for fast local control of Tuya
+devices. It is based on and remains compatible with
+[make-all/tuya-local](https://github.com/make-all/tuya-local).
+
+The Plus fork adds two reliability and setup features:
+
+- Safe DHCP rediscovery: when a configured device becomes unreachable, its new
+  LAN address is discovered by device ID and authenticated with its local key
+  before the config entry is updated. Invalid Docker bridge or gateway addresses
+  are rejected.
+- Cloud synchronization: after SmartLife QR login, multiple directly addressable
+  Wi-Fi devices can be selected and imported in one operation. Authentication is
+  stored privately and checked every five minutes so newly paired supported Wi-Fi
+  devices are imported automatically. A single LAN scan is shared by each sync,
+  while connection and device-type failures are isolated per device. Automatic
+  imports require either an unambiguous exact device-profile match or a validated
+  match between the Tuya cloud category and the local profile to prevent unsafe
+  entity mappings. Devices that do not announce themselves over UDP are probed on
+  already verified private Tuya /24 subnets at most once every 30 minutes. Gateway,
+  Bluetooth and Zigbee child devices remain available through the existing
+  individual setup flow.
+
+The integration still communicates with devices locally after setup. Cloud access
+is optional and only used to obtain setup metadata and local keys.
+
+## Upstream project
+
 Please report any [issues](https://github.com/make-all/tuya-local/issues) and feel free to raise [pull requests](https://github.com/make-all/tuya-local/pulls).
 [Many others](https://github.com/make-all/tuya-local/blob/main/ACKNOWLEDGEMENTS.md) have contributed their help already.
 
@@ -52,8 +81,9 @@ instance.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://m
 
 ### Choose your configuration path
 
-There are two options for configuring a device:
+There are three options for configuring devices:
 - You can login to Tuya cloud with the Tuya or SmartLife app and retrieve a list of devices and the necessary local connection data.
+- You can use cloud bulk import to discover, validate and add multiple directly addressable Wi-Fi devices in one operation.
 - You can provide all the necessary information manually [as per the instructions in DEVICES_DETAILS.md](DEVICE_DETAILS.md#finding-your-device-id-and-local-key).
 
 The first choice essentially automates all the manual steps of the second and without needing to create a Tuya IOT developer account. This is especially important now that Tuya has started time limiting access to a key data access capability in the IOT developer portal to only a month with the ability to refresh the trial of that only every 6 months.
@@ -320,4 +350,3 @@ Beyond contributing device configs, here are some areas that could benefit from 
 1. Unit tests. This integration is mostly unit-tested thanks to the upstream project, but there are a few more to complete. Focus on unit tests is on python code, the current coverage is summarised in reports on github, but to get full coverage details you can run the tests yourself.
 2. Once unit tests are complete, the next task is to properly evaluate against the Home Assistant quality scale.
 3. Discovery. Local discovery is currently limited to finding the IP address in the cloud assisted config. Performing discovery in background would allow notifications to be raised when new devices are noticed on the network, and would provide a productKey for the manual config method to use when matching device configs.
-

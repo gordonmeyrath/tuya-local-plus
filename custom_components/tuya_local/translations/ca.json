@@ -27,6 +27,13 @@
                 },
                 "description": "Seleccioneu el dispositiu que voleu afegir des de la primera llista desplegable. No es mostren els dispositius ja afegits.\n\nSi el dispositiu es connecta a través d'una passarel·la, seleccioneu-la de la llista passarel·la en cas contrari no en trieu cap."
             },
+            "bulk_import": {
+                "title": "Import Tuya cloud devices",
+                "description": "Select the directly addressable Wi-Fi devices to discover, validate and import locally. Gateway, Bluetooth and Zigbee child devices require separate setup and are not listed.",
+                "data": {
+                    "device_ids": "Devices to import"
+                }
+            },
             "search": {
                 "title": "Localitzeu l'adreça IP del dispositiu",
                 "description": "{device_name}Tuya cloud no proporciona adreces IP locals, per tant, ara hem de cercar a la vostra xarxa local per a trobar el dispositiu. Això triga fins a 20 segons.\n\nSi no teniu èxit, haureu de proporcionar l'adreça IP vós mateix d'alguna altra manera, com ara des de l'assignació DHCP de l'encaminador.\n\nPer a aquest pas i que pugueu afegir amb èxit el dispositiu, heu de tancar l'aplicació mòbil o les seves connexions al dispositiu sovint bloquejarà la comunicació Tuya Local amb ells."
@@ -65,10 +72,18 @@
                 }
             }
         },
+        "progress": {
+            "bulk_import": "Discovering and importing selected devices"
+        },
         "abort": {
             "already_configured": "Ja s'ha afegit un dispositiu amb aquest ID.",
             "not_supported": "No hi ha suport per a aquest dispositiu.",
-            "no_devices": "No s'ha pogut trobar cap dispositiu sense registrar per al compte."
+            "no_devices": "No s'ha pogut trobar cap dispositiu sense registrar per al compte.",
+            "bulk_no_devices": "No directly addressable local devices are available for bulk import.",
+            "bulk_complete": "Bulk import complete: {imported} imported, {skipped} already configured, {failed} unavailable or unsupported.",
+            "bulk_connection_failed": "The device was not reachable over the local network.",
+            "bulk_not_supported": "The device could not be matched to a supported local device type safely.",
+            "bulk_cancelled": "The bulk import was cancelled."
         },
         "error": {
             "connection": "No s'ha pogut conectar al vostre dispositiu con esos detalles. Podría ser un problema intermitente, o podrían ser incorrectos. Si seleccionó una versión de protocolo específica, intente 'auto' en su lugar.",
@@ -76,11 +91,12 @@
             "does_not_need_hub": "El dispositiu no necessita una passarel·la i se n'ha seleccionat una. Reviseu les vostres opcions."
         }
     },
-    "title": "Tuya Local",
+    "title": "Tuya Local Plus",
     "selector": {
         "setup_mode": {
             "options": {
                 "cloud": "Configuració del dispositiu assistida amb el núvol SmartLife.",
+                "cloud_bulk": "Import all selected local devices from SmartLife cloud.",
                 "manual": "Proporciona manualment la informació de connexió al dispositiu.",
                 "cloud_fresh_login": "Inicia la sessió en un altre compte de núvol de SmartLife."
             }
@@ -100,7 +116,8 @@
             }
         },
         "abort": {
-            "not_supported": "No hi ha suport per a aquest dispositiu."
+            "not_supported": "No hi ha suport per a aquest dispositiu.",
+            "cloud_sync_managed": "Cloud synchronization runs automatically and has no configurable options."
         },
         "error": {
             "connection": "No s'ha pogut conectar al vostre dispositiu con esos detalles. Podría ser un problema intermitente, o podrían ser incorrectos. Si seleccionó una versión de protocolo específica, intente 'auto' en su lugar."

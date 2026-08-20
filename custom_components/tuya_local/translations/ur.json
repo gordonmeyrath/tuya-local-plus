@@ -28,6 +28,13 @@
                     "hub_id": "گیٹ وے کا انتخاب کریں:"
                 }
             },
+            "bulk_import": {
+                "title": "Import Tuya cloud devices",
+                "description": "Select the directly addressable Wi-Fi devices to discover, validate and import locally. Gateway, Bluetooth and Zigbee child devices require separate setup and are not listed.",
+                "data": {
+                    "device_ids": "Devices to import"
+                }
+            },
             "search": {
                 "title": "آلہ کا IP پتہ تلاش کریں۔",
                 "description": "{device_name}Tuya کلاؤڈ مقامی IP پتے فراہم نہیں کرتا ہے لہذا اب ہمیں آلہ تلاش کرنے کے لیے آپ کے مقامی نیٹ ورک کو تلاش کرنا ہوگا۔ "
@@ -66,10 +73,18 @@
                 }
             }
         },
+        "progress": {
+            "bulk_import": "Discovering and importing selected devices"
+        },
         "abort": {
             "already_configured": "اس ID کے ساتھ ایک آلہ پہلے ہی شامل کیا جا چکا ہے۔",
             "not_supported": "معذرت، اس آلہ کے لیے کوئی تعاون نہیں ہے۔",
-            "no_devices": "اکاؤنٹ کے لیے کوئی غیر رجسٹرڈ ڈیوائسز تلاش کرنے سے قاصر۔"
+            "no_devices": "اکاؤنٹ کے لیے کوئی غیر رجسٹرڈ ڈیوائسز تلاش کرنے سے قاصر۔",
+            "bulk_no_devices": "No directly addressable local devices are available for bulk import.",
+            "bulk_complete": "Bulk import complete: {imported} imported, {skipped} already configured, {failed} unavailable or unsupported.",
+            "bulk_connection_failed": "The device was not reachable over the local network.",
+            "bulk_not_supported": "The device could not be matched to a supported local device type safely.",
+            "bulk_cancelled": "The bulk import was cancelled."
         },
         "error": {
             "connection": "ان تفصیلات کے ساتھ آپ کے آلے سے منسلک ہونے سے قاصر ہے۔ یہ ایک وقفے وقفے سے جاری مسئلہ ہو سکتا ہے، یا وہ غلط ہو سکتے ہیں۔ اگر آپ نے مخصوص پروٹوکول ورژن منتخب کیا ہے، تو اس کے بجائے 'auto' آزمانے کی کوشش کریں۔",
@@ -81,6 +96,7 @@
         "setup_mode": {
             "options": {
                 "cloud": "اسمارٹ لائف کلاؤڈ اسسٹڈ ڈیوائس سیٹ اپ۔",
+                "cloud_bulk": "Import all selected local devices from SmartLife cloud.",
                 "manual": "دستی طور پر ڈیوائس کنکشن کی معلومات فراہم کریں۔",
                 "cloud_fresh_login": "اسمارٹ لائف کلاؤڈ اسسٹڈ ڈیوائس سیٹ اپ (تازہ لاگ ان)"
             }
@@ -103,7 +119,8 @@
             "connection": "ان تفصیلات کے ساتھ آپ کے آلے سے منسلک ہونے سے قاصر ہے۔ یہ ایک وقفے وقفے سے جاری مسئلہ ہو سکتا ہے، یا وہ غلط ہو سکتے ہیں۔ اگر آپ نے مخصوص پروٹوکول ورژن منتخب کیا ہے، تو اس کے بجائے 'auto' آزمانے کی کوشش کریں۔"
         },
         "abort": {
-            "not_supported": "معذرت، اس آلہ کے لیے کوئی تعاون نہیں ہے۔."
+            "not_supported": "معذرت، اس آلہ کے لیے کوئی تعاون نہیں ہے۔.",
+            "cloud_sync_managed": "Cloud synchronization runs automatically and has no configurable options."
         }
     },
     "services": {

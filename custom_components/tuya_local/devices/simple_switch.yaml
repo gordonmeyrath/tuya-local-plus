@@ -1,4 +1,8 @@
 name: Simple switch
+products:
+  - id: ON0fHlAaAf7Pt7ja
+    manufacturer: Tuya
+    model: WiFi switch
 entities:
   - entity: switch
     dps:

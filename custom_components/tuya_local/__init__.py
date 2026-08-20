@@ -11,14 +11,17 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant, SupportsResponse, callback
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.device_registry import async_get as async_get_device_registry
 from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 from homeassistant.helpers.entity_registry import async_migrate_entries
 from homeassistant.util import slugify
 
+from .cloud import async_load_auth
+from .cloud_sync import async_start_cloud_sync, async_stop_cloud_sync
 from .const import (
+    CLOUD_ACCOUNT_TYPE,
     CONF_DEVICE_CID,
     CONF_DEVICE_ID,
     CONF_LOCAL_KEY,
@@ -28,12 +31,36 @@ from .const import (
     DOMAIN,
 )
 from .device import async_delete_device, get_device_id, setup_device
-from .discovery import async_start_discovery, async_stop_discovery
+from .discovery import async_scan_devices, async_start_discovery, async_stop_discovery
 from .helpers.device_config import get_config
 from .services import async_setup_services
 
 _LOGGER = logging.getLogger(__name__)
 NOT_FOUND = "Configuration file for %s not found"
+
+
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """Initialize integration-level storage before config entries are set up."""
+    hass.data.setdefault(DOMAIN, {})
+    await async_load_auth(hass)
+
+    async def async_scan_service(call):
+        """Run UDP discovery inside Home Assistant Core's network namespace."""
+        _LOGGER.warning("Manual Tuya UDP discovery scan started")
+        found = await async_scan_devices(hass)
+        _LOGGER.warning(
+            "Manual Tuya UDP discovery scan finished: %d devices", len(found)
+        )
+        return {"devices": len(found)}
+
+    if not hass.services.has_service(DOMAIN, "scan_devices"):
+        hass.services.async_register(
+            DOMAIN,
+            "scan_devices",
+            async_scan_service,
+            supports_response=SupportsResponse.ONLY,
+        )
+    return True
 
 
 def replace_unique_ids(entity_entry, device_id, conf_file, replacements):
@@ -90,6 +117,9 @@ def cleanup_failed_device(hass: HomeAssistant, device_id: str):
 
 async def async_migrate_entry(hass, entry: ConfigEntry):
     """Migrate to latest config format."""
+
+    if entry.data.get(CONF_TYPE) == CLOUD_ACCOUNT_TYPE:
+        return True
 
     CONF_TYPE_AUTO = "auto"
 
@@ -1024,6 +1054,11 @@ async def async_migrate_entry(hass, entry: ConfigEntry):
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
+    if entry.data.get(CONF_TYPE) == CLOUD_ACCOUNT_TYPE:
+        await async_start_cloud_sync(hass)
+        entry.async_on_unload(entry.add_update_listener(async_update_entry))
+        return True
+
     device_id = get_device_id(entry.data)
     _LOGGER.debug(
         "Setting up entry for device: %s",
@@ -1061,12 +1096,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     await hass.config_entries.async_forward_entry_setups(entry, entities)
     await async_setup_services(hass, entities)
 
-    entry.add_update_listener(async_update_entry)
+    entry.async_on_unload(entry.add_update_listener(async_update_entry))
 
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
+    if entry.data.get(CONF_TYPE) == CLOUD_ACCOUNT_TYPE:
+        async_stop_cloud_sync(hass)
+        return True
+
     device_id = get_device_id(entry.data)
     _LOGGER.debug("Unloading entry for device: %s", device_id)
     config = entry.data
@@ -1074,6 +1113,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
     data = domain_data.get(device_id)
     if data is None:
         await async_delete_device(hass, config)
+        if not _other_device_entries(hass, entry.entry_id):
+            async_stop_discovery(hass)
         return True
 
     device_conf = await hass.async_add_executor_job(
@@ -1096,15 +1137,21 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
     domain_data.pop(device_id, None)
 
     # Stop the shared rediscovery sweeper once the last device is gone.
-    remaining = [
-        e
-        for e in hass.config_entries.async_entries(DOMAIN)
-        if e.entry_id != entry.entry_id
-    ]
-    if not remaining:
+    if not _other_device_entries(hass, entry.entry_id):
         async_stop_discovery(hass)
 
     return True
+
+
+def _other_device_entries(hass: HomeAssistant, excluded_entry_id: str):
+    """Return other physical device entries that still need LAN discovery."""
+    return [
+        other
+        for other in hass.config_entries.async_entries(DOMAIN)
+        if other.entry_id != excluded_entry_id
+        and other.data.get(CONF_TYPE) != CLOUD_ACCOUNT_TYPE
+        and other.data.get(CONF_DEVICE_ID)
+    ]
 
 
 async def async_update_entry(hass: HomeAssistant, entry: ConfigEntry):

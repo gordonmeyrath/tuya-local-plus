@@ -22,6 +22,8 @@ from custom_components.tuya_local.const import (
     CONF_DEVICE_CID,
     CONF_DEVICE_ID,
     CONF_LOCAL_KEY,
+    CONF_MANUFACTURER,
+    CONF_MODEL,
     CONF_POLL_ONLY,
     CONF_PROTOCOL_VERSION,
     CONF_TYPE,
@@ -890,6 +892,22 @@ async def test_options_flow_fails_when_config_is_missing(hass, mocker):
     assert result["reason"] == "not_supported"
 
 
+@pytest.mark.asyncio
+async def test_cloud_sync_options_flow_is_managed_automatically(hass):
+    """The cloud account entry does not expose local-device options."""
+    config_entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="smartlife_cloud_sync",
+        data={CONF_TYPE: "cloud_account"},
+    )
+    config_entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(config_entry.entry_id)
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "cloud_sync_managed"
+
+
 def test_migration_gets_correct_device_id():
     """Test that migration gets the correct device id."""
     # Normal device
@@ -984,7 +1002,7 @@ async def test_flow_user_cloud_fresh_login_logs_out_and_goes_to_cloud(hass, mock
     """Test cloud_fresh_login forces logout then goes to cloud step."""
     mock_cloud = mocker.MagicMock()
     mock_cloud.is_authenticated = False
-    mock_cloud.logout = mocker.MagicMock()
+    mock_cloud.async_logout = AsyncMock()
     mocker.patch(
         "custom_components.tuya_local.config_flow.Cloud", return_value=mock_cloud
     )
@@ -993,7 +1011,7 @@ async def test_flow_user_cloud_fresh_login_logs_out_and_goes_to_cloud(hass, mock
     result = await hass.config_entries.flow.async_configure(
         flow["flow_id"], user_input={"setup_mode": "cloud_fresh_login"}
     )
-    mock_cloud.logout.assert_called_once()
+    mock_cloud.async_logout.assert_awaited_once()
     assert result["type"] == "form"
     assert result["step_id"] == "cloud"
 
@@ -1713,3 +1731,387 @@ async def test_flow_integration_discovery_aborts_if_configured(hass):
     )
     assert result["type"] == "abort"
     assert result["reason"] == "already_configured"
+
+
+@pytest.mark.asyncio
+async def test_flow_cloud_bulk_shows_direct_device_selector(hass, mocker):
+    """Bulk cloud mode lists only directly addressable local devices."""
+    devices = _make_cloud_devices(include_hub=True)
+    devices["dev1"]["id"] = "dev1"
+    devices["hub1"]["id"] = "hub1"
+    devices["child"] = {
+        "id": "child",
+        "name": "Child",
+        "product_name": "Sensor",
+        "local_key": "childkey",
+        "online": True,
+        "is_hub": False,
+        "sub": True,
+        "exists": False,
+        "ip": "",
+    }
+    mock_cloud = mocker.MagicMock()
+    mock_cloud.is_authenticated = True
+    mock_cloud.async_get_devices = AsyncMock(return_value=devices)
+    mocker.patch(
+        "custom_components.tuya_local.config_flow.Cloud", return_value=mock_cloud
+    )
+
+    flow = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        flow["flow_id"], user_input={"setup_mode": "cloud_bulk"}
+    )
+
+    assert result["type"] == "form"
+    assert result["step_id"] == "bulk_import"
+    validated = result["data_schema"]({"device_ids": ["dev1"]})
+    assert validated["device_ids"] == ["dev1"]
+    with pytest.raises(vol.MultipleInvalid):
+        result["data_schema"]({"device_ids": ["hub1"]})
+
+
+@pytest.mark.asyncio
+async def test_flow_cloud_bulk_imports_and_enables_sync(hass, mocker):
+    """Bulk import performs one LAN scan and creates persistent cloud sync."""
+    devices = _make_cloud_devices(include_offline=True)
+    devices["dev1"].update({"id": "dev1", "product_id": "prod1"})
+    devices["dev2"].update({"id": "dev2", "product_id": "prod2"})
+    mock_cloud = mocker.MagicMock()
+    mock_cloud.is_authenticated = True
+    mock_cloud.async_get_devices = AsyncMock(return_value=devices)
+    mocker.patch(
+        "custom_components.tuya_local.config_flow.Cloud", return_value=mock_cloud
+    )
+    scan = mocker.patch(
+        "custom_components.tuya_local.config_flow.async_scan_devices",
+        new=AsyncMock(
+            return_value={
+                "192.168.1.11": {
+                    "gwId": "dev1",
+                    "ip": "192.168.1.11",
+                    "version": "3.3",
+                },
+                "192.168.1.12": {
+                    "gwId": "dev2",
+                    "ip": "192.168.1.12",
+                    "version": "3.4",
+                },
+            }
+        ),
+    )
+
+    flow = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    await hass.config_entries.flow.async_configure(
+        flow["flow_id"], user_input={"setup_mode": "cloud_bulk"}
+    )
+    nested_init = mocker.patch.object(
+        hass.config_entries.flow,
+        "async_init",
+        new=AsyncMock(
+            side_effect=[
+                {"type": FlowResultType.CREATE_ENTRY},
+                {"type": FlowResultType.ABORT, "reason": "bulk_connection_failed"},
+            ]
+        ),
+    )
+    result = await hass.config_entries.flow.async_configure(
+        flow["flow_id"], user_input={"device_ids": ["dev1", "dev2"]}
+    )
+
+    assert result["type"] == FlowResultType.SHOW_PROGRESS
+    await hass.async_block_till_done()
+    result = await hass.config_entries.flow.async_configure(flow["flow_id"])
+    assert result["type"] == "create_entry"
+    assert result["title"] == "Smart Life cloud sync"
+    assert result["data"]["type"] == "cloud_account"
+    assert result["data"]["initial_import"] == {
+        "imported": 1,
+        "skipped": 0,
+        "failed": 1,
+    }
+    assert nested_init.await_count == 2
+    assert scan.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_flow_cloud_bulk_scan_failure_still_enables_sync(hass, mocker):
+    """A failed initial LAN scan still creates persistent cloud sync."""
+    devices = _make_cloud_devices()
+    devices["dev1"].update({"id": "dev1", "product_id": "prod1"})
+    mock_cloud = mocker.MagicMock()
+    mock_cloud.is_authenticated = True
+    mock_cloud.async_get_devices = AsyncMock(return_value=devices)
+    mocker.patch(
+        "custom_components.tuya_local.config_flow.Cloud", return_value=mock_cloud
+    )
+    mocker.patch(
+        "custom_components.tuya_local.config_flow.async_scan_devices",
+        new=AsyncMock(side_effect=RuntimeError("scan failed")),
+    )
+
+    flow = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    await hass.config_entries.flow.async_configure(
+        flow["flow_id"], user_input={"setup_mode": "cloud_bulk"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        flow["flow_id"], user_input={"device_ids": ["dev1"]}
+    )
+    assert result["type"] == FlowResultType.SHOW_PROGRESS
+    await hass.async_block_till_done()
+    result = await hass.config_entries.flow.async_configure(flow["flow_id"])
+
+    assert result["type"] == "create_entry"
+    assert result["data"]["initial_import"] == {
+        "imported": 0,
+        "skipped": 0,
+        "failed": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_import_flow_autodetects_and_creates_entry(hass, bypass_setup, mocker):
+    """One bulk child flow validates, matches and creates a normal config entry."""
+    mock_device = mocker.MagicMock()
+    mock_device._protocol_configured = 3.4
+    mock_device._product_ids = []
+    mock_device._get_cached_state.return_value = {"1": True}
+    mock_type = mocker.MagicMock()
+    mock_type.config_type = "smartplugv1"
+    mock_type.match_quality.return_value = 100
+    mock_type.product_display_entries.return_value = [("Brand", "Model")]
+    mock_device.async_possible_types = AsyncMock(return_value=[mock_type])
+    mocker.patch(
+        "custom_components.tuya_local.config_flow.async_test_connection",
+        return_value=mock_device,
+    )
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "import"},
+        data={
+            CONF_DEVICE_ID: "deviceid",
+            CONF_HOST: "192.168.1.20",
+            CONF_LOCAL_KEY: TESTKEY,
+            CONF_PROTOCOL_VERSION: "auto",
+            CONF_POLL_ONLY: False,
+            CONF_NAME: "Kitchen plug",
+            "product_ids": ["cloud-product", "local-product"],
+        },
+    )
+
+    assert result["type"] == "create_entry"
+    assert result["title"] == "Kitchen plug"
+    assert result["data"][CONF_TYPE] == "smartplugv1"
+    assert result["data"][CONF_PROTOCOL_VERSION] == 3.4
+    assert result["data"][CONF_MANUFACTURER] == "Brand"
+    assert result["data"][CONF_MODEL] == "Model"
+    assert mock_device.set_detected_product_id.call_args_list == [
+        mocker.call("cloud-product"),
+        mocker.call("local-product"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_import_flow_rejects_weak_device_match(hass, mocker):
+    """Automatic imports never create entries from unsafe weak matches."""
+    mock_device = mocker.MagicMock()
+    mock_device._protocol_configured = 3.3
+    mock_device._product_ids = []
+    mock_device._get_cached_state.return_value = {"1": True}
+    mock_type = mocker.MagicMock()
+    mock_type.config_type = "smartplugv1"
+    mock_type.match_quality.return_value = config_flow.BULK_MATCH_MIN_QUALITY - 1
+    mock_type.product_display_entries.return_value = [(None, None)]
+    mock_device.async_possible_types = AsyncMock(return_value=[mock_type])
+    mocker.patch(
+        "custom_components.tuya_local.config_flow.async_test_connection",
+        return_value=mock_device,
+    )
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "import"},
+        data={
+            CONF_DEVICE_ID: "deviceid",
+            CONF_HOST: "192.168.1.20",
+            CONF_LOCAL_KEY: TESTKEY,
+            CONF_PROTOCOL_VERSION: 3.3,
+        },
+    )
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "bulk_not_supported"
+
+
+@pytest.mark.asyncio
+async def test_import_flow_rejects_category_mismatch(hass, mocker):
+    """An exact DPS match cannot override an incompatible Tuya category."""
+    mock_device = mocker.MagicMock()
+    mock_device._protocol_configured = 3.3
+    mock_device._product_ids = []
+    mock_device._get_cached_state.return_value = {"1": True}
+    mock_type = mocker.MagicMock()
+    mock_type.config_type = "tesla_pet_feeder"
+    mock_type.match_quality.return_value = 100
+    mock_type.product_display_entries.return_value = [(None, None)]
+    mock_device.async_possible_types = AsyncMock(return_value=[mock_type])
+    mocker.patch(
+        "custom_components.tuya_local.config_flow.async_test_connection",
+        return_value=mock_device,
+    )
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "cloud_sync"},
+        data={
+            CONF_DEVICE_ID: "deviceid",
+            CONF_HOST: "192.168.1.20",
+            CONF_LOCAL_KEY: TESTKEY,
+            CONF_PROTOCOL_VERSION: 3.3,
+            "category": "kg",
+        },
+    )
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "bulk_not_supported"
+
+
+@pytest.mark.asyncio
+async def test_import_flow_prefers_category_compatible_match(
+    hass, bypass_setup, mocker
+):
+    """A switch category overrides a higher-scoring unrelated profile."""
+    mock_device = mocker.MagicMock()
+    mock_device._protocol_configured = 3.3
+    mock_device._product_ids = []
+    mock_device._get_cached_state.return_value = {"1": True}
+    unrelated = mocker.MagicMock()
+    unrelated.config_type = "tesla_pet_feeder"
+    unrelated.match_quality.return_value = 100
+    unrelated.product_display_entries.return_value = [(None, None)]
+    compatible = mocker.MagicMock()
+    compatible.config_type = "simple_switch_timer"
+    compatible.match_quality.return_value = 80
+    compatible.product_display_entries.return_value = [(None, None)]
+    mock_device.async_possible_types = AsyncMock(return_value=[unrelated, compatible])
+    mocker.patch(
+        "custom_components.tuya_local.config_flow.async_test_connection",
+        return_value=mock_device,
+    )
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "cloud_sync"},
+        data={
+            CONF_DEVICE_ID: "deviceid",
+            CONF_HOST: "192.168.1.20",
+            CONF_LOCAL_KEY: TESTKEY,
+            CONF_PROTOCOL_VERSION: 3.3,
+            CONF_NAME: "Garden pump",
+            "category": "kg",
+        },
+    )
+
+    assert result["type"] == "create_entry"
+    assert result["data"][CONF_TYPE] == "simple_switch_timer"
+
+
+@pytest.mark.asyncio
+async def test_import_flow_rejects_ambiguous_best_match(hass, mocker):
+    """Equal-quality matches for different types require manual selection."""
+    mock_device = mocker.MagicMock()
+    mock_device._protocol_configured = 3.3
+    mock_device._product_ids = []
+    mock_device._get_cached_state.return_value = {"1": True}
+    first = mocker.MagicMock()
+    first.config_type = "smartplugv1"
+    first.match_quality.return_value = 90
+    first.product_display_entries.return_value = [(None, None)]
+    second = mocker.MagicMock()
+    second.config_type = "smartplugv2"
+    second.match_quality.return_value = 90
+    second.product_display_entries.return_value = [(None, None)]
+    mock_device.async_possible_types = AsyncMock(return_value=[first, second])
+    mocker.patch(
+        "custom_components.tuya_local.config_flow.async_test_connection",
+        return_value=mock_device,
+    )
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "import"},
+        data={
+            CONF_DEVICE_ID: "deviceid",
+            CONF_HOST: "192.168.1.20",
+            CONF_LOCAL_KEY: TESTKEY,
+            CONF_PROTOCOL_VERSION: 3.3,
+        },
+    )
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "bulk_not_supported"
+
+
+@pytest.mark.asyncio
+async def test_import_flow_accepts_category_compatible_tied_match(
+    hass, bypass_setup, mocker
+):
+    """Equivalent light profiles may be resolved using the cloud category."""
+    mock_device = mocker.MagicMock()
+    mock_device._protocol_configured = 3.3
+    mock_device._product_ids = []
+    mock_device._get_cached_state.return_value = {"1": True}
+    first = mocker.MagicMock()
+    first.config_type = "rgbcw_lightbulb"
+    first.match_quality.return_value = 101
+    first.product_display_entries.return_value = [(None, None)]
+    second = mocker.MagicMock()
+    second.config_type = "rgbcw_lightbulb_v2"
+    second.match_quality.return_value = 101
+    second.product_display_entries.return_value = [(None, None)]
+    mock_device.async_possible_types = AsyncMock(return_value=[first, second])
+    mocker.patch(
+        "custom_components.tuya_local.config_flow.async_test_connection",
+        return_value=mock_device,
+    )
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "cloud_sync"},
+        data={
+            CONF_DEVICE_ID: "deviceid",
+            CONF_HOST: "192.168.1.20",
+            CONF_LOCAL_KEY: TESTKEY,
+            CONF_PROTOCOL_VERSION: 3.3,
+            CONF_NAME: "Hall light",
+            "category": "dj",
+        },
+    )
+
+    assert result["type"] == "create_entry"
+    assert result["data"][CONF_TYPE] == "rgbcw_lightbulb"
+
+
+@pytest.mark.asyncio
+async def test_import_flow_stops_when_bulk_parent_was_cancelled(hass, mocker):
+    """A removed parent flow cannot create entries from a late child import."""
+    hass.data[DOMAIN] = {config_flow.DATA_BULK_CANCELLED: {"parent-flow"}}
+    connection = mocker.patch(
+        "custom_components.tuya_local.config_flow.async_test_connection"
+    )
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "import", "bulk_parent": "parent-flow"},
+        data={
+            CONF_DEVICE_ID: "deviceid",
+            CONF_HOST: "192.168.1.20",
+            CONF_LOCAL_KEY: TESTKEY,
+            CONF_PROTOCOL_VERSION: 3.3,
+            "bulk_parent": "parent-flow",
+        },
+    )
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "bulk_cancelled"
+    connection.assert_not_called()

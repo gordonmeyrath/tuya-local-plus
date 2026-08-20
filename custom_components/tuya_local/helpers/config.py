@@ -4,8 +4,7 @@ Helper for general config
 
 import logging
 
-from .. import DOMAIN
-from ..const import CONF_DEVICE_CID, CONF_DEVICE_ID, CONF_TYPE
+from ..const import CONF_DEVICE_CID, CONF_DEVICE_ID, CONF_TYPE, DOMAIN
 from .device_config import get_config
 
 _LOGGER = logging.getLogger(__name__)
