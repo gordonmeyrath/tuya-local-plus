@@ -29,8 +29,8 @@ is optional and only used to obtain setup metadata and local keys.
 
 ## Support and upstream
 
-Please report Plus-specific [issues](https://github.com/gordonmeyrath/tuya-local/issues)
-and open [pull requests](https://github.com/gordonmeyrath/tuya-local/pulls) in this
+Please report Plus-specific [issues](https://github.com/gordonmeyrath/tuya-local-plus/issues)
+and open [pull requests](https://github.com/gordonmeyrath/tuya-local-plus/pulls) in this
 fork. General device support is inherited from the
 [upstream project](https://github.com/make-all/tuya-local).
 [Many others](https://github.com/make-all/tuya-local/blob/main/ACKNOWLEDGEMENTS.md) have contributed their help already.
